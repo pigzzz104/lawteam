@@ -512,7 +512,9 @@ def get_calendar_events(
             payload = item.extracted_payload or {}
             t_title = (
                 payload.get("title")
+                or payload.get("doc_title_hint")
                 or payload.get("doc_type")
+                or payload.get("event_type_guess")
                 or payload.get("event_type")
                 or "待确认短信日程"
             )
@@ -533,7 +535,9 @@ def get_calendar_events(
                     case_category=c.case_category if c else None,
                     category="triage_tentative",
                     risk_level=RiskLevel.HIGH,
-                    location=payload.get("court_room") or payload.get("location"),
+                    location=payload.get("hearing_location")
+                    or payload.get("court_room")
+                    or payload.get("location"),
                     owner_id=item.owner_user_id,
                     owner_name=owner.full_name if owner else None,
                     color="#94a3b8",

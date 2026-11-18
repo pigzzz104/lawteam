@@ -326,6 +326,8 @@ export interface InboxTriageRead {
   matched_case_number: string | null;
   item_type: "judicial_stage_and_doc" | "invoice_archive";
   status: TriageStatus;
+  auto_archived: boolean;
+  triage_reason: string | null;
   extracted_payload: Record<string, unknown>;
   downloaded_files: string[];
   error_or_manual_reason: string | null;

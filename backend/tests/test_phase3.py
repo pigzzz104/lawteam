@@ -23,6 +23,7 @@ from app.models.entities import (
     Deadline,
     Document,
     InboxTriageItem,
+    ReminderDelivery,
     ScheduleItem,
     SmsInbound,
     TriageStatus,
@@ -121,6 +122,13 @@ def _cleanup_records(
                     session.delete(row)
         if triage_ids:
             for tid in triage_ids:
+                for row in session.exec(
+                    select(ReminderDelivery).where(
+                        ReminderDelivery.source_type == "triage_alert",
+                        ReminderDelivery.source_id == tid,
+                    )
+                ).all():
+                    session.delete(row)
                 for row in session.exec(
                     select(AuditLog).where(
                         AuditLog.entity_type == "inbox_triage_item",
@@ -534,7 +542,7 @@ def test_inbox_manual_upload_list_and_ignore(
         _cleanup_records(triage_ids=created_triage_ids)
 
 
-def test_invoice_pdf_staging_and_claim_to_case(
+def test_invoice_auto_archive_reopen_and_unmatched_staging(
     client: TestClient, isolated_cases_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     headers = _login(client, "lead_lawyer")
@@ -543,18 +551,28 @@ def test_invoice_pdf_staging_and_claim_to_case(
     async def mock_dl_invoice(url: str) -> bytes:
         return invoice_pdf
 
-    monkeypatch.setattr(invoice_fetcher, "_download_invoice_pdf_direct", mock_dl_invoice)
-    monkeypatch.setattr(
-        invoice_fetcher.pdfplumber,
-        "open",
-        lambda *args, **kwargs: _DummyPdfDoc(
-            [
+    pdf_texts = iter(
+        [
+            (
                 "电子发票（普通发票）\n发票号码：26312000000123456789\n开票日期：2026年06月15日\n"
                 "购买方信息 名称：上海馨成达会展科技有限公司 统一社会信用代码：91310115MA1K998877\n"
                 "销售方信息 名称：上海某律所\n"
                 "*鉴证咨询服务*法律服务费\n价税合计(小写)¥15000.00\n备注：（2026）沪0115执99804号案件律师费"
-            ]
-        ),
+            ),
+            (
+                "电子发票（普通发票）\n发票号码：26312000000999888777\n开票日期：2026年06月16日\n"
+                "购买方信息 名称：未知无关联公司 统一社会信用代码：91310115MA1K000000\n"
+                "销售方信息 名称：上海某律所\n"
+                "*鉴证咨询服务*咨询费\n价税合计(小写)¥2000.00\n备注：无案号"
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(invoice_fetcher, "_download_invoice_pdf_direct", mock_dl_invoice)
+    monkeypatch.setattr(
+        invoice_fetcher.pdfplumber,
+        "open",
+        lambda *args, **kwargs: _DummyPdfDoc([next(pdf_texts)]),
     )
 
     created_case_ids: list[int] = []
@@ -575,6 +593,7 @@ def test_invoice_pdf_staging_and_claim_to_case(
         case_id = case_resp.json()["case"]["id"]
         created_case_ids.append(case_id)
 
+        # 1. Matched invoice -> auto-archived directly to 05_财务与发票 without manual confirm
         inv_sms = (
             "【诺诺网】您有一张电子发票已开具，请点击下载：https://nnfp.jss.com.cn/abc123def"
         )
@@ -590,22 +609,14 @@ def test_invoice_pdf_staging_and_claim_to_case(
             created_sms_ids.append(triage["sms_id"])
 
         assert triage["item_type"] == "invoice_archive"
+        assert triage["status"] == TriageStatus.CONFIRMED.value
+        assert triage["auto_archived"] is True
         assert triage["matched_case_id"] == case_id
         assert len(triage["downloaded_files"]) == 1
-        staged_rel = triage["downloaded_files"][0]
-        assert staged_rel.startswith("_待认领发票/20260615_法律服务费_15000.00元_26312000000123456789")
-        assert (isolated_cases_root / staged_rel).is_file()
-
-        confirm_resp = client.post(
-            f"/api/inbox/{triage['id']}/confirm",
-            headers=headers,
-            json={"case_id": case_id},
-        )
-        assert confirm_resp.status_code == 200, confirm_resp.text
-        archived_rel = confirm_resp.json()["archived_documents"][0]
+        archived_rel = triage["downloaded_files"][0]
         assert "/05_财务与发票/" in archived_rel
+        assert "20260615_法律服务费_15000.00元_26312000000123456789" in archived_rel
         assert (isolated_cases_root / archived_rel).is_file()
-        assert not (isolated_cases_root / staged_rel).exists()
 
         with Session(engine) as session:
             doc = session.exec(
@@ -615,6 +626,206 @@ def test_invoice_pdf_staging_and_claim_to_case(
             assert doc.case_id == case_id
             assert doc.folder_category == "05_财务与发票"
             assert doc.invoice_meta and doc.invoice_meta["invoice_number"] == "26312000000123456789"
+
+        # 2. Reopen (undo auto-archive) moves back to _待认领发票 and resets to PENDING
+        reopen_resp = client.post(f"/api/inbox/{triage['id']}/reopen", headers=headers)
+        assert reopen_resp.status_code == 200, reopen_resp.text
+        reopened = reopen_resp.json()
+        assert reopened["status"] == TriageStatus.PENDING.value
+        assert reopened["auto_archived"] is False
+        staged_rel = reopened["downloaded_files"][0]
+        assert staged_rel.startswith("_待认领发票/")
+        assert (isolated_cases_root / staged_rel).is_file()
+        assert not (isolated_cases_root / archived_rel).exists()
+
+        # Re-confirm back into the case
+        confirm_resp = client.post(
+            f"/api/inbox/{triage['id']}/confirm",
+            headers=headers,
+            json={"case_id": case_id},
+        )
+        assert confirm_resp.status_code == 200, confirm_resp.text
+        rearchived_rel = confirm_resp.json()["archived_documents"][0]
+        assert "/05_财务与发票/" in rearchived_rel
+        assert (isolated_cases_root / rearchived_rel).is_file()
+
+        # 3. Unmatched invoice -> stays in _待认领发票 as PENDING for manual confirmation
+        unmatched_resp = client.post(
+            "/api/inbox/simulate",
+            headers=headers,
+            json={
+                "content": "【诺诺网】您有一张电子发票已开具，请点击下载：https://nnfp.jss.com.cn/unmatched999",
+                "sender": "1069012",
+                "auto_fetch": True,
+            },
+        )
+        assert unmatched_resp.status_code == 201, unmatched_resp.text
+        unmatched = unmatched_resp.json()
+        created_triage_ids.append(unmatched["id"])
+        if unmatched["sms_id"]:
+            created_sms_ids.append(unmatched["sms_id"])
+        assert unmatched["status"] == TriageStatus.PENDING.value
+        assert unmatched["auto_archived"] is False
+        assert unmatched["matched_case_id"] is None
+        assert unmatched["downloaded_files"][0].startswith("_待认领发票/")
+    finally:
+        _cleanup_records(
+            case_ids=created_case_ids,
+            triage_ids=created_triage_ids,
+            sms_ids=created_sms_ids,
+        )
+
+
+def test_auto_archive_court_doc_noise_and_ambiguous_fallback(
+    client: TestClient, isolated_cases_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = _login(client, "lead_lawyer")
+    sample_pdf = _make_minimal_pdf("Civil Judgment Auto Archive")
+
+    async def mock_post_zxfw(
+        qdbh: str, sdbh: str, sdsin: str, phone_last4: str | None = None
+    ) -> dict[str, Any]:
+        return {
+            "success": True,
+            "data": [
+                {
+                    "c_fymc": "上海市第一中级人民法院",
+                    "c_wsmc": "民事判决书",
+                    "wjlj": "https://mock.court.local/doc/civil-judgment.pdf",
+                    "c_wjgs": "pdf",
+                    "dt_cjsj": "2026-06-12 17:03:00",
+                }
+            ],
+        }
+
+    async def mock_dl(url: str) -> bytes:
+        return sample_pdf
+
+    monkeypatch.setattr(court_fetcher, "_post_zxfw_api", mock_post_zxfw)
+    monkeypatch.setattr(court_fetcher, "_download_url_bytes", mock_dl)
+    monkeypatch.setattr(
+        court_fetcher.pdfplumber,
+        "open",
+        lambda *args, **kwargs: _DummyPdfDoc(
+            ["上海市第一中级人民法院\n民事判决书\n（2026）沪01民初8801号\n审判员：张敏"]
+        ),
+    )
+
+    created_case_ids: list[int] = []
+    created_triage_ids: list[int] = []
+    created_sms_ids: list[int] = []
+    try:
+        # Create target civil case beforehand
+        c_resp = client.post(
+            "/api/cases",
+            headers=headers,
+            json={
+                "case_title": "自动化归档民事案件",
+                "case_number": "（2026）沪01民初8801号",
+                "case_category": "civil",
+                "client_name": "独有委托人甲",
+            },
+        )
+        assert c_resp.status_code == 201, c_resp.text
+        case_id = c_resp.json()["case"]["id"]
+        created_case_ids.append(case_id)
+
+        # 1. Exact case number + covered rule -> auto-archived with deadline & stage advance
+        sim_resp = client.post(
+            "/api/inbox/simulate",
+            headers=headers,
+            json={
+                "content": (
+                    "【上海市第一中级人民法院】请查收（2026）沪01民初8801号案件送达文书。"
+                    "https://zxfw.court.gov.cn/zxfw/#/pagesAjkj/app/wssd/index?"
+                    "qdbh=aaa111&sdbh=bbb222&sdsin=ccc333"
+                ),
+                "sender": "12368",
+                "auto_fetch": True,
+                "phone_last4": "8966",
+            },
+        )
+        assert sim_resp.status_code == 201, sim_resp.text
+        triage = sim_resp.json()
+        created_triage_ids.append(triage["id"])
+        if triage["sms_id"]:
+            created_sms_ids.append(triage["sms_id"])
+
+        assert triage["status"] == TriageStatus.CONFIRMED.value
+        assert triage["auto_archived"] is True
+        assert triage["matched_case_id"] == case_id
+        archived_rel = triage["downloaded_files"][0]
+        assert "/01_司法与程序文书/" in archived_rel
+        assert (isolated_cases_root / archived_rel).is_file()
+
+        # Verify file download/preview endpoint for triage item
+        dl_resp = client.get(
+            f"/api/inbox/{triage['id']}/files/download",
+            headers=headers,
+            params={"rel_path": archived_rel, "inline": "true"},
+        )
+        assert dl_resp.status_code == 200
+        assert dl_resp.content.startswith(b"%PDF-")
+
+        with Session(engine) as session:
+            c = session.get(Case, case_id)
+            assert c is not None and c.current_stage == "裁判与上诉期"
+            dls = session.exec(select(Deadline).where(Deadline.case_id == case_id)).all()
+            assert any(d.rule_code == "CIVIL_APPEAL_JUDGMENT_15D" for d in dls)
+
+        # 2. Noise "other" SMS -> auto-ignored
+        noise_resp = client.post(
+            "/api/inbox/simulate",
+            headers=headers,
+            json={"content": "【运营商提醒】您本月话费账单已出，请查收。", "sender": "10086", "auto_fetch": False},
+        )
+        assert noise_resp.status_code == 201, noise_resp.text
+        noise = noise_resp.json()
+        created_triage_ids.append(noise["id"])
+        if noise["sms_id"]:
+            created_sms_ids.append(noise["sms_id"])
+        assert noise["status"] == TriageStatus.IGNORED.value
+        assert noise["extracted_payload"].get("auto_ignored") is True
+
+        # 3. Ambiguous client match (two active cases with same client_name) -> PENDING + batch ignore
+        for idx in (1, 2):
+            amb_c = client.post(
+                "/api/cases",
+                headers=headers,
+                json={
+                    "case_title": f"同名委托人案{idx}",
+                    "case_category": "civil",
+                    "client_name": "重名科技有限公司",
+                },
+            )
+            assert amb_c.status_code == 201
+            created_case_ids.append(amb_c.json()["case"]["id"])
+
+        amb_resp = client.post(
+            "/api/inbox/simulate",
+            headers=headers,
+            json={
+                "content": "【上海法院】重名科技有限公司代理人：请及时关注案件进展。",
+                "sender": "12368",
+                "auto_fetch": False,
+            },
+        )
+        assert amb_resp.status_code == 201, amb_resp.text
+        amb = amb_resp.json()
+        created_triage_ids.append(amb["id"])
+        if amb["sms_id"]:
+            created_sms_ids.append(amb["sms_id"])
+        assert amb["status"] == TriageStatus.PENDING.value
+        assert amb["matched_case_id"] is None
+        assert len(amb["extracted_payload"].get("ambiguous_case_ids") or []) == 2
+
+        batch_resp = client.post(
+            "/api/inbox/batch-ignore",
+            headers=headers,
+            json={"triage_ids": [amb["id"]]},
+        )
+        assert batch_resp.status_code == 200
+        assert batch_resp.json()["ignored_count"] == 1
     finally:
         _cleanup_records(
             case_ids=created_case_ids,

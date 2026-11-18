@@ -10,6 +10,7 @@ import type { DatesSetArg, EventClickArg } from "@fullcalendar/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Ban,
   BellPlus,
   CalendarPlus,
   Check,
@@ -21,7 +22,7 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { authApi, calendarApi, casesApi, remindersApi, usersApi } from "@/api/client";
+import { authApi, calendarApi, casesApi, inboxApi, remindersApi, usersApi } from "@/api/client";
 import { ModalDialog } from "@/components/ModalDialog";
 import { CategoryBadge, RiskBadge } from "@/components/StatusBadges";
 import { useAuth } from "@/context/AuthContext";
@@ -198,7 +199,54 @@ export function CalendarWorkbench() {
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
     queryClient.invalidateQueries({ queryKey: ["case-detail-for-cal"] });
     queryClient.invalidateQueries({ queryKey: ["cases"] });
+    queryClient.invalidateQueries({ queryKey: ["inbox"] });
   };
+
+  const quickConfirmTriageMut = useMutation({
+    mutationFn: async (ev: CalendarEventItem) => {
+      if (!ev.case_id) throw new Error("未关联案件，请前往收件箱选择案件后确认");
+      const cleanTitle = ev.title.replace(/^\[待确认\]\s*/, "").trim() || "开庭审理";
+      return inboxApi.confirm(ev.record_id, {
+        case_id: ev.case_id,
+        event_type: ev.all_day ? null : "hearing_scheduled",
+        event_date: ev.all_day ? null : ev.start.slice(0, 10),
+        create_hearing: ev.all_day
+          ? null
+          : {
+              category: "hearing",
+              title: cleanTitle,
+              start_time: ev.start,
+              end_time: ev.end,
+              location: ev.location || null,
+              risk_level: ev.risk_level,
+            },
+      });
+    },
+    onSuccess: (res) => {
+      invalidateAllCalendar();
+      setSelectedEvent(null);
+      setErrorMsg(null);
+      setActionMsg(`已就地确认入案 #${res.case_id}，并同步日历`);
+    },
+    onError: (err: Error) => {
+      setActionMsg(null);
+      setErrorMsg(err.message);
+    },
+  });
+
+  const quickIgnoreTriageMut = useMutation({
+    mutationFn: (triageId: number) => inboxApi.ignore(triageId),
+    onSuccess: () => {
+      invalidateAllCalendar();
+      setSelectedEvent(null);
+      setErrorMsg(null);
+      setActionMsg("已忽略该待确认预览日程");
+    },
+    onError: (err: Error) => {
+      setActionMsg(null);
+      setErrorMsg(err.message);
+    },
+  });
 
   const updateDeadlineMut = useMutation({
     mutationFn: ({
@@ -695,10 +743,35 @@ export function CalendarWorkbench() {
             )}
 
             {selectedEvent.source_type === "triage_tentative" && (
-              <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <div className="space-y-2.5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                 <p>该事项来自未确认的短信分拣预览，确认入案后将转为正式日程/期限。</p>
-                <Link to="/inbox" className="inline-flex items-center gap-1 font-semibold underline">
-                  前往分拣收件箱确认 →
+                <div className="flex flex-wrap items-center gap-2">
+                  {selectedEvent.case_id && (
+                    <button
+                      type="button"
+                      disabled={quickConfirmTriageMut.isPending}
+                      onClick={() => quickConfirmTriageMut.mutate(selectedEvent)}
+                      className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>{quickConfirmTriageMut.isPending ? "确认中..." : "一键确认入案"}</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={quickIgnoreTriageMut.isPending}
+                    onClick={() => quickIgnoreTriageMut.mutate(selectedEvent.record_id)}
+                    className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                  >
+                    <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>忽略</span>
+                  </button>
+                </div>
+                <Link
+                  to={`/inbox?id=${selectedEvent.record_id}`}
+                  className="inline-flex items-center gap-1 font-semibold underline"
+                >
+                  去收件箱核对详情 →
                 </Link>
               </div>
             )}

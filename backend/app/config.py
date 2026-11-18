@@ -32,8 +32,10 @@ class Settings(BaseSettings):
     # File Bridge
     cases_root: str = str(ROOT_DIR / "data" / "cases")
 
-    # Court fetching policy
+    # Court fetching & auto-archiving policy
     court_auto_fetch_mode: Literal["confirm_before_sign", "auto_all"] = "confirm_before_sign"
+    auto_archive_enabled: bool = True
+    frontend_base_url: str = "http://127.0.0.1:5173"
 
     # Enterprise WeChat & Personal WeChat Push Gateways
     wecom_corp_id: str = ""

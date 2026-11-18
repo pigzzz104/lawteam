@@ -7,6 +7,7 @@ Arbitration Commission, and E-Invoice SMS without trusting sender numbers alone.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any, Optional
@@ -215,7 +216,13 @@ def _guess_event_type(content: str, doc_title_hint: Optional[str], patterns: dic
                 return ev
     if "执行" in search_space and any(k in search_space for k in ("调查令", "执行通知书", "限期履行")):
         return "enforcement_notice_served"
-    if "送达文书" in content or "查收" in content:
+    if "送达文书" in content or (
+        "查收" in content
+        and any(
+            k in content
+            for k in ("法院", "检察", "仲裁", "司法", "文书", "传票", "裁定", "判决", "通知书", "调查令", "zxfw")
+        )
+    ):
         return "document_served"
     return None
 
@@ -402,6 +409,113 @@ async def parse_sms_with_optional_llm(
     return parsed
 
 
+@dataclass(frozen=True)
+class CaseMatchResult:
+    """Outcome of matching a triage payload against accessible cases."""
+
+    case: Optional[Case] = None
+    confidence: str = "none"  # exact_case_number | unique_client | ambiguous | none
+    candidate_case_ids: list[int] = field(default_factory=list)
+    reason: Optional[str] = None
+
+
+def suggest_stage_for_event(
+    case_category: Optional[str], event_type: Optional[str]
+) -> Optional[str]:
+    """Return suggested procedural stage for `(case_category, event_type)` if mapped."""
+    if not case_category or not event_type:
+        return None
+    return _SUGGESTED_STAGE_BY_EVENT.get((case_category, event_type))
+
+
+def match_case_with_confidence(
+    session: Session,
+    user: User,
+    parsed: dict[str, Any],
+    extra_text: str = "",
+) -> CaseMatchResult:
+    """Find matching accessible ``Case``(s) and return match confidence for auto-archiving."""
+    accessible_ids = get_accessible_case_ids_filter(user, session)
+    if not accessible_ids:
+        return CaseMatchResult(confidence="none", reason="当前无可用在办案件")
+
+    candidates = list(session.exec(select(Case).where(Case.id.in_(accessible_ids))).all())
+    if not candidates:
+        return CaseMatchResult(confidence="none", reason="当前无可用在办案件")
+
+    active_candidates = [c for c in candidates if not c.is_archived]
+    pool = active_candidates or candidates
+
+    target_case_no = normalize_case_number(parsed.get("case_number"))
+    combined = f"{parsed.get('client_hint') or ''} {extra_text}".strip()
+    norm_combined = normalize_case_number(combined) or ""
+
+    # 1. Exact case_number match (prefer active cases; fall back to archived if needed)
+    exact_matches: list[Case] = []
+    if target_case_no:
+        exact_matches = [
+            c for c in active_candidates if normalize_case_number(c.case_number) == target_case_no
+        ]
+        if not exact_matches:
+            exact_matches = [
+                c for c in candidates if normalize_case_number(c.case_number) == target_case_no
+            ]
+    if not exact_matches and norm_combined:
+        exact_matches = [
+            c
+            for c in pool
+            if c.case_number and normalize_case_number(c.case_number) in norm_combined
+        ]
+
+    if len(exact_matches) == 1:
+        return CaseMatchResult(case=exact_matches[0], confidence="exact_case_number")
+    if len(exact_matches) > 1:
+        return CaseMatchResult(
+            case=None,
+            confidence="ambiguous",
+            candidate_case_ids=[c.id for c in exact_matches if c.id is not None],
+            reason="案号命中多个案件，请人工确认归属案件",
+        )
+
+    # 2. Client name match among active cases
+    if combined:
+        client_matches = [
+            c
+            for c in active_candidates
+            if c.client_name and len(c.client_name.strip()) >= 2 and c.client_name.strip() in combined
+        ]
+        if len(client_matches) == 1:
+            return CaseMatchResult(case=client_matches[0], confidence="unique_client")
+        if len(client_matches) > 1:
+            return CaseMatchResult(
+                case=None,
+                confidence="ambiguous",
+                candidate_case_ids=[c.id for c in client_matches if c.id is not None],
+                reason=f"委托人「{client_matches[0].client_name}」名下有 {len(client_matches)} 个在办案件，请人工指定归属",
+            )
+
+        opponent_matches = [
+            c
+            for c in active_candidates
+            if c.opponent_name and len(c.opponent_name.strip()) >= 2 and c.opponent_name.strip() in combined
+        ]
+        if len(opponent_matches) == 1:
+            return CaseMatchResult(
+                case=opponent_matches[0],
+                confidence="unique_opponent",
+                reason="仅匹配到对方当事人名称，建议人工核对案件归属",
+            )
+        if len(opponent_matches) > 1:
+            return CaseMatchResult(
+                case=None,
+                confidence="ambiguous",
+                candidate_case_ids=[c.id for c in opponent_matches if c.id is not None],
+                reason="对方当事人命中多个在办案件，请人工指定归属",
+            )
+
+    return CaseMatchResult(confidence="none", reason="未匹配到在办案件，请人工选择或新建案件")
+
+
 def match_case_for_user(
     session: Session,
     user: User,
@@ -409,42 +523,7 @@ def match_case_for_user(
     extra_text: str = "",
 ) -> Optional[Case]:
     """Find the best matching accessible ``Case`` for a triage item."""
-    accessible_ids = get_accessible_case_ids_filter(user, session)
-    if not accessible_ids:
-        return None
-
-    stmt = select(Case).where(Case.id.in_(accessible_ids))
-    candidates = session.exec(stmt).all()
-    if not candidates:
-        return None
-
-    target_case_no = normalize_case_number(parsed.get("case_number"))
-    if target_case_no:
-        for c in candidates:
-            if normalize_case_number(c.case_number) == target_case_no:
-                return c
-
-    # Secondary match via client_hint or case_number/client_name in combined text
-    combined = f"{parsed.get('client_hint') or ''} {extra_text}".strip()
-    if combined:
-        best_case: Optional[Case] = None
-        best_score = 0
-        for c in candidates:
-            score = 0
-            norm_no = normalize_case_number(c.case_number)
-            if norm_no and norm_no in normalize_case_number(combined):
-                score += 100
-            if c.client_name and len(c.client_name.strip()) >= 2 and c.client_name.strip() in combined:
-                score += 20
-            if c.opponent_name and len(c.opponent_name.strip()) >= 2 and c.opponent_name.strip() in combined:
-                score += 10
-            if score > best_score:
-                best_score = score
-                best_case = c
-        if best_score > 0:
-            return best_case
-
-    return None
+    return match_case_with_confidence(session, user, parsed, extra_text=extra_text).case
 
 
 def suggest_stage_options(category: Optional[str]) -> list[str]:

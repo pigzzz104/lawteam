@@ -159,6 +159,7 @@ def _deliver_with_idempotency(
     summary: ReminderSweepSummary,
     settings: Settings,
     http_client: Optional[httpx.Client],
+    textcard_url: Optional[str] = None,
 ) -> None:
     existing = session.exec(
         select(ReminderDelivery).where(ReminderDelivery.idempotency_key == idempotency_key)
@@ -192,6 +193,7 @@ def _deliver_with_idempotency(
         users=recipient_users,
         title=title,
         markdown_body=markdown_body,
+        textcard_url=textcard_url,
         settings=settings,
         http_client=http_client,
     )
@@ -263,6 +265,7 @@ def _evaluate_deadlines(
             if escalated:
                 markdown_body += "\n- **升级说明**：红线期限临期 ≤ 1 天尚未标记完成，已自动抄送督办合伙人。"
 
+            base_url = settings.frontend_base_url.rstrip("/")
             _deliver_with_idempotency(
                 session=session,
                 idempotency_key=f"deadline:{dl.id}:offset:{offset}:{dl.due_date.isoformat()}",
@@ -277,6 +280,7 @@ def _evaluate_deadlines(
                 summary=summary,
                 settings=settings,
                 http_client=http_client,
+                textcard_url=f"{base_url}/cases/{dl.case_id}",
             )
 
         # 2) Personal custom timestamp alerts
@@ -355,6 +359,8 @@ def _evaluate_schedules(
                 f"- **开始时间**：{start_sh.strftime('%Y-%m-%d %H:%M')}（{lead_desc}）\n"
                 f"- **地点**：{sched.location or '待定'}"
             )
+            base_url = settings.frontend_base_url.rstrip("/")
+            sched_url = f"{base_url}/cases/{sched.case_id}" if sched.case_id else f"{base_url}/calendar"
             _deliver_with_idempotency(
                 session=session,
                 idempotency_key=f"schedule:{sched.id}:min:{offset_min}:{start_utc.isoformat()}",
@@ -369,6 +375,7 @@ def _evaluate_schedules(
                 summary=summary,
                 settings=settings,
                 http_client=http_client,
+                textcard_url=sched_url,
             )
 
 
@@ -398,6 +405,7 @@ def _evaluate_manual_triage_alerts(
             f"- **需要人工处理原因**：{item.error_or_manual_reason or '需人工点击核验或补充手机号后4位下载文书'}"
             f"{link_line}"
         )
+        base_url = settings.frontend_base_url.rstrip("/")
         _deliver_with_idempotency(
             session=session,
             idempotency_key=f"triage_manual:{item.id}",
@@ -412,6 +420,7 @@ def _evaluate_manual_triage_alerts(
             summary=summary,
             settings=settings,
             http_client=http_client,
+            textcard_url=f"{base_url}/inbox?id={item.id}",
         )
 
 
@@ -437,6 +446,49 @@ def push_manual_fetch_alert(
         summary=summary,
         settings=cfg,
         http_client=http_client,
+    )
+    session.commit()
+    return summary
+
+
+def push_pending_confirm_alert(
+    session: Session,
+    triage_item: InboxTriageItem,
+    *,
+    settings: Optional[Settings] = None,
+    http_client: Optional[httpx.Client] = None,
+) -> ReminderSweepSummary:
+    """Push an idempotent alert when an item has no covering auto-archive rule and needs human confirmation."""
+    cfg = settings or get_settings()
+    now_utc = utcnow()
+    summary = ReminderSweepSummary(evaluated_at=now_utc)
+    if triage_item.status != TriageStatus.PENDING or triage_item.id is None:
+        return summary
+
+    users_by_id = _load_active_users_map(session)
+    payload = triage_item.extracted_payload or {}
+    case_no = payload.get("case_number") or "未识别案号"
+    hint = payload.get("doc_title_hint") or (
+        "电子发票" if triage_item.item_type == "invoice_archive" else "程序短信/文书"
+    )
+    reason = payload.get("triage_reason") or "暂无覆盖规则或未匹配到唯一案件，请人工确认归档"
+    base_url = cfg.frontend_base_url.rstrip("/")
+
+    _deliver_with_idempotency(
+        session=session,
+        idempotency_key=f"triage_pending:{triage_item.id}",
+        source_type="triage_alert",
+        source_id=triage_item.id,
+        recipient_ids=[triage_item.owner_user_id],
+        scheduled_at_utc=now_utc,
+        is_completed_skip=False,
+        title=f"【待人工确认归档】{hint}（{case_no}）",
+        markdown_body=f"- **事项**：{hint}\n- **案号**：{case_no}\n- **需确认原因**：{reason}",
+        users_by_id=users_by_id,
+        summary=summary,
+        settings=cfg,
+        http_client=http_client,
+        textcard_url=f"{base_url}/inbox?id={triage_item.id}",
     )
     session.commit()
     return summary

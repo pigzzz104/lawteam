@@ -192,6 +192,38 @@ def save_staged_triage_file(batch_key: str, filename: str, data: bytes) -> tuple
     return dest, rel_to_root
 
 
+def _move_file_avoiding_collision(
+    src_rel_path: str,
+    dest_dir: Path,
+    desired_filename: Optional[str] = None,
+) -> str:
+    """Safely move a regular file under CASES_ROOT into ``dest_dir``, avoiding name collisions."""
+    src = resolve_safe_path(src_rel_path, must_exist=True)
+    if not src.is_file():
+        raise FileNotFoundError(f"Source is not a regular file: {src_rel_path}")
+
+    root = get_cases_root()
+    resolved_dest_dir = dest_dir.resolve()
+    if resolved_dest_dir != root and root not in resolved_dest_dir.parents:
+        raise PathSecurityError(f"Target directory escapes CASES_ROOT: {resolved_dest_dir}")
+    resolved_dest_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_name = sanitize_filename(desired_filename or src.name)
+    p = Path(clean_name)
+    stem, suffix = p.stem, p.suffix
+
+    attempt = 1
+    while True:
+        candidate_name = clean_name if attempt == 1 else f"{stem} ({attempt}){suffix}"
+        dest = resolved_dest_dir / candidate_name
+        if not dest.exists():
+            break
+        attempt += 1
+
+    shutil.move(os.fspath(src), os.fspath(dest))
+    return dest.relative_to(root).as_posix()
+
+
 def move_rel_file_to_case(
     src_rel_path: str,
     target_case_folder_rel_path: str,
@@ -201,26 +233,24 @@ def move_rel_file_to_case(
     """Safely move a file under CASES_ROOT into a case subfolder, avoiding collisions."""
     if subfolder not in STANDARD_CASE_SUBFOLDERS:
         raise ValueError(f"Invalid target case subfolder: {subfolder}")
-    src = resolve_safe_path(src_rel_path, must_exist=True)
-    if not src.is_file():
-        raise FileNotFoundError(f"Source is not a regular file: {src_rel_path}")
-
     case_dir = ensure_case_directories(target_case_folder_rel_path)
-    dest_dir = case_dir / subfolder
-    clean_name = sanitize_filename(desired_filename or src.name)
-    p = Path(clean_name)
-    stem, suffix = p.stem, p.suffix
+    return _move_file_avoiding_collision(src_rel_path, case_dir / subfolder, desired_filename)
 
-    attempt = 1
-    while True:
-        candidate_name = clean_name if attempt == 1 else f"{stem} ({attempt}){suffix}"
-        dest = dest_dir / candidate_name
-        if not dest.exists():
-            break
-        attempt += 1
 
-    shutil.move(os.fspath(src), os.fspath(dest))
-    return dest.relative_to(get_cases_root()).as_posix()
+def move_rel_file_to_staging(
+    src_rel_path: str,
+    *,
+    is_invoice: bool,
+    batch_key: str,
+    desired_filename: Optional[str] = None,
+) -> str:
+    """Move a file back into ``_待认领发票`` or ``_待分拣暂存/{batch_key}`` when reopening triage."""
+    if is_invoice:
+        dest_dir = get_cases_root() / UNCLAIMED_INVOICES_DIR
+    else:
+        safe_batch = sanitize_segment(batch_key, fallback="reopen", max_len=48)
+        dest_dir = resolve_safe_path(f"{STAGING_TRIAGE_DIR}/{safe_batch}")
+    return _move_file_avoiding_collision(src_rel_path, dest_dir, desired_filename)
 
 
 def list_case_files(folder_rel_path: str) -> dict[str, list[dict[str, Any]]]:

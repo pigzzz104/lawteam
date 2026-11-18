@@ -547,6 +547,16 @@ def create_case_event(
     except ImportError:
         derived = []
 
+    from app.services.sms_parser import suggest_stage_for_event
+
+    suggested_stage = suggest_stage_for_event(case.case_category.value, event.event_type)
+    if suggested_stage and suggested_stage != case.current_stage:
+        now = utcnow()
+        case.current_stage = suggested_stage
+        case.stage_entered_at = now
+        case.updated_at = now
+        session.add(case)
+
     record_audit_log(
         session,
         actor_user_id=current_user.id,
@@ -558,6 +568,7 @@ def create_case_event(
             "event_type": event.event_type,
             "event_date": event.event_date.isoformat(),
             "derived_deadlines": len(derived),
+            "current_stage": case.current_stage,
         },
     )
     session.commit()

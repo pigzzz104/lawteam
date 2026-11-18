@@ -478,10 +478,13 @@ export const calendarApi = {
 };
 
 export const inboxApi = {
-  list: (params?: { status?: TriageStatus; item_type?: string }) => {
+  list: (params?: { status?: TriageStatus; item_type?: string; auto_archived?: boolean }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.item_type) qs.set("item_type", params.item_type);
+    if (params?.auto_archived !== undefined) {
+      qs.set("auto_archived", String(params.auto_archived));
+    }
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return apiFetch<InboxTriageRead[]>(`/api/inbox${suffix}`);
   },
@@ -502,12 +505,16 @@ export const inboxApi = {
     item_type: "judicial_stage_and_doc" | "invoice_archive";
     case_id?: number | null;
     notes?: string;
+    auto_archive?: boolean;
   }) => {
     const fd = new FormData();
     payload.files.forEach((f) => fd.append("files", f));
     fd.append("item_type", payload.item_type);
     if (payload.case_id) fd.append("case_id", String(payload.case_id));
     if (payload.notes) fd.append("notes", payload.notes);
+    if (payload.auto_archive !== undefined) {
+      fd.append("auto_archive", String(payload.auto_archive));
+    }
     return apiFetch<InboxTriageRead>("/api/inbox/manual-upload", {
       method: "POST",
       body: fd,
@@ -531,10 +538,60 @@ export const inboxApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  reopen: (triageId: number) =>
+    apiFetch<InboxTriageRead>(`/api/inbox/${triageId}/reopen`, {
+      method: "POST",
+    }),
   ignore: (triageId: number) =>
     apiFetch<InboxTriageRead>(`/api/inbox/${triageId}/ignore`, {
       method: "POST",
     }),
+  batchIgnore: (triageIds: number[]) =>
+    apiFetch<{ ignored_count: number; ignored_ids: number[] }>("/api/inbox/batch-ignore", {
+      method: "POST",
+      body: JSON.stringify({ triage_ids: triageIds }),
+    }),
+  downloadFile: async (
+    triageId: number,
+    relPath: string,
+    filename: string,
+    inline = false
+  ) => {
+    const token = getStoredToken();
+    const res = await fetch(
+      `/api/inbox/${triageId}/files/download?rel_path=${encodeURIComponent(relPath)}&inline=${inline ? "true" : "false"}`,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }
+    );
+    if (res.status === 401 && unauthorizedHandler) {
+      unauthorizedHandler();
+    }
+    if (!res.ok) {
+      let detail = `文件访问失败 (HTTP ${res.status})`;
+      try {
+        const parsed = await res.json();
+        if (typeof parsed?.detail === "string") detail = parsed.detail;
+      } catch {
+        // ignore non-json error response
+      }
+      throw new ApiError(res.status, detail);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (inline) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return;
+    }
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  },
 };
 
 export const remindersApi = {
