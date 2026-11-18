@@ -716,6 +716,7 @@ def create_custom_deadline(
         override_reason=payload.override_reason or "手动创建自定义期限",
         is_completed=False,
         notify_target_type=payload.notify_target_type,
+        notify_owner_id=current_user.id if payload.notify_target_type == NotifyTargetType.SELF else None,
         custom_notify_user_ids=payload.custom_notify_user_ids,
         escalate_to_supervisor=payload.escalate_to_supervisor,
         reminder_offsets_days=payload.reminder_offsets_days,
@@ -767,6 +768,8 @@ def update_deadline(
         dl.due_date = updates["due_date"]
     if "notify_target_type" in updates and updates["notify_target_type"] is not None:
         dl.notify_target_type = updates["notify_target_type"]
+        if dl.notify_target_type == NotifyTargetType.SELF:
+            dl.notify_owner_id = current_user.id
     if "custom_notify_user_ids" in updates and updates["custom_notify_user_ids"] is not None:
         dl.custom_notify_user_ids = updates["custom_notify_user_ids"]
     if "escalate_to_supervisor" in updates and updates["escalate_to_supervisor"] is not None:
@@ -924,6 +927,7 @@ def create_schedule(
         location=payload.location,
         risk_level=payload.risk_level,
         notify_target_type=payload.notify_target_type,
+        notify_owner_id=current_user.id if payload.notify_target_type == NotifyTargetType.SELF else None,
         custom_notify_user_ids=payload.custom_notify_user_ids,
         reminder_offsets_minutes=payload.reminder_offsets_minutes,
         is_completed=False,

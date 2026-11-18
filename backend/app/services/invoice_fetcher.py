@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 import httpx
 import pdfplumber
 
+from app.core.url_safety import (
+    UnsafeUrlError,
+    safe_async_get,
+    validate_external_fetch_url,
+)
 from app.services import file_bridge
 from app.services.ocr_service import extract_scanned_pdf_text
 
@@ -556,39 +561,47 @@ async def _probe_nuonuo_api(
 
 
 async def _download_invoice_pdf_direct(url: str) -> Optional[bytes]:
-    async with httpx.AsyncClient(
-        timeout=20.0,
-        follow_redirects=True,
+    resp = await safe_async_get(
+        url,
         headers={"User-Agent": _BROWSER_UA},
-    ) as client:
-        resp = await client.get(url)
-        if resp.status_code >= 400:
-            return None
-        ct = (resp.headers.get("content-type") or "").lower()
-        if "pdf" in ct or resp.content.startswith(b"%PDF-"):
-            return resp.content
+        timeout=20.0,
+        require_portal_allowlist=True,
+    )
+    if resp.status_code >= 400:
+        return None
+    ct = (resp.headers.get("content-type") or "").lower()
+    if "pdf" in ct or resp.content.startswith(b"%PDF-"):
+        return resp.content
     return None
 
 
 async def _download_invoice_artifact_direct(url: str) -> Optional[tuple[str, bytes, dict[str, Any]]]:
     """Download PDF/OFD/XML/ZIP directly or via Baiwang/Nuonuo preview APIs."""
+    validated_url = validate_external_fetch_url(url, require_portal_allowlist=True)
     async with httpx.AsyncClient(
         timeout=25.0,
-        follow_redirects=True,
+        follow_redirects=False,
         headers={"User-Agent": _BROWSER_UA},
     ) as client:
         for probe in (_probe_baiwang_api, _probe_nuonuo_api):
-            artifact = await probe(client, url)
+            artifact = await probe(client, validated_url)
             if artifact is not None:
                 return artifact
 
-        try:
-            resp = await client.get(url)
-            artifact = _classify_http_response_artifact(resp, url)
-            if artifact is not None:
-                return artifact
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Direct artifact fetch failed for %s: %s", url, exc)
+    try:
+        resp = await safe_async_get(
+            validated_url,
+            headers={"User-Agent": _BROWSER_UA},
+            timeout=25.0,
+            require_portal_allowlist=True,
+        )
+        artifact = _classify_http_response_artifact(resp, validated_url)
+        if artifact is not None:
+            return artifact
+    except UnsafeUrlError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Direct artifact fetch failed for %s: %s", validated_url, exc)
     return None
 
 
@@ -596,6 +609,11 @@ async def _download_invoice_artifact_playwright(
     url: str,
 ) -> tuple[Optional[str], Optional[bytes], Optional[str]]:
     """Use Playwright to intercept network responses, iframes, and format download buttons."""
+    try:
+        url = validate_external_fetch_url(url, require_portal_allowlist=True)
+    except UnsafeUrlError as exc:
+        return None, None, str(exc)
+
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -726,15 +744,20 @@ async def fetch_and_stage_invoice(parsed_sms: dict[str, Any]) -> InvoiceFetchRes
         if not primary_url:
             primary_url = url
 
-        pdf_direct = await _download_invoice_pdf_direct(url)
-        if pdf_direct is not None:
-            picked_ext, picked_bytes = ".pdf", pdf_direct
-            break
+        try:
+            pdf_direct = await _download_invoice_pdf_direct(url)
+            if pdf_direct is not None:
+                picked_ext, picked_bytes = ".pdf", pdf_direct
+                break
 
-        artifact_direct = await _download_invoice_artifact_direct(url)
-        if artifact_direct is not None:
-            picked_ext, picked_bytes, extra_meta = artifact_direct
-            break
+            artifact_direct = await _download_invoice_artifact_direct(url)
+            if artifact_direct is not None:
+                picked_ext, picked_bytes, extra_meta = artifact_direct
+                break
+        except UnsafeUrlError as exc:
+            if not manual_hint:
+                manual_hint = str(exc)
+            continue
 
         if _download_invoice_pdf_playwright is not _DEFAULT_PW_PDF_FN:
             pw_pdf = await _download_invoice_pdf_playwright(url)

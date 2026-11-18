@@ -77,6 +77,7 @@ class CaseCreate(BaseModel):
     custody_status: Optional[str] = None
     custody_place: Optional[str] = None
     crime_type: Optional[str] = None
+    charge_name: Optional[str] = None
     trial_mode: Optional[str] = None
     members: list[CaseMemberInput] = []
 
@@ -99,6 +100,7 @@ class CaseUpdate(BaseModel):
     custody_status: Optional[str] = None
     custody_place: Optional[str] = None
     crime_type: Optional[str] = None
+    charge_name: Optional[str] = None
     trial_mode: Optional[str] = None
     is_archived: Optional[bool] = None
 
@@ -352,6 +354,7 @@ def create_case(
         custody_status=payload.custody_status,
         custody_place=payload.custody_place,
         crime_type=resolved_crime_type,
+        charge_name=payload.charge_name.strip() if payload.charge_name else None,
         trial_mode=payload.trial_mode,
         folder_rel_path=folder_rel_path,
         created_at=now,

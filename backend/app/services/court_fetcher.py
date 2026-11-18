@@ -25,6 +25,11 @@ import httpx
 import pdfplumber
 
 from app.config import get_settings
+from app.core.url_safety import (
+    UnsafeUrlError,
+    safe_async_get,
+    validate_external_fetch_url,
+)
 from app.services import file_bridge
 from app.services.ocr_service import MIN_TEXT_CHARS, extract_scanned_pdf_text
 from app.services.sms_parser import normalize_case_number
@@ -331,10 +336,14 @@ async def _post_hbfy_api(msg: str) -> dict[str, Any]:
 
 
 async def _download_url_bytes(url: str, *, headers: Optional[dict[str, str]] = None) -> bytes:
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.content
+    resp = await safe_async_get(
+        url,
+        headers=headers,
+        timeout=30.0,
+        require_portal_allowlist=False,
+    )
+    resp.raise_for_status()
+    return resp.content
 
 
 async def _tier1_fetch_zxfw(
@@ -546,6 +555,13 @@ async def _pw_fetch_gdems(
     captured_docs: list[tuple[str, bytes]],
 ) -> Optional[str]:
     """Playwright adapter for `sd.gdems.com` (Guangdong EMS court delivery)."""
+    if verify_value:
+        verify_input = page.locator(
+            "input[placeholder*='后4位'], input[placeholder*='手机'], "
+            "input[placeholder*='提取码'], input[placeholder*='验证码'], input[type='text']"
+        )
+        if await verify_input.count() > 0:
+            await verify_input.first.fill(verify_value)
     confirm_loc = page.locator(
         "#submit-btn, #confirm-btn, .submit-btn, .confirm-btn, "
         "button:has-text('确认并预览材料'), button:has-text('确认')"
@@ -689,6 +705,17 @@ async def _pw_fetch_hbfy(
     if await page.locator("input[name='captcha'], img.code_img").count() > 0:
         return "湖北电子送达页面需要图形验证码核验，请人工点击链接下载后上传归档"
 
+    if verify_value:
+        verify_input = page.locator(
+            "input[placeholder*='后4位'], input[placeholder*='手机'], input[placeholder*='提取码']"
+        )
+        if await verify_input.count() > 0:
+            await verify_input.first.fill(verify_value)
+            confirm_btn = page.locator("button:has-text('确认'), button:has-text('验证'), button:has-text('查询')")
+            if await confirm_btn.count() > 0:
+                await confirm_btn.first.click(timeout=5000)
+                await page.wait_for_timeout(1000)
+
     all_btn = page.locator("button:has-text('下载全部')")
     if await all_btn.count() > 0:
         if await _collect_download(
@@ -791,6 +818,11 @@ async def _tier2_playwright_fetch(
     domain = link_info.get("domain") or ""
     url = link_info.get("url") or ""
 
+    try:
+        url = validate_external_fetch_url(url, require_portal_allowlist=True)
+    except UnsafeUrlError as exc:
+        return None, str(exc), False
+
     gate_reason, needs_phone = _check_tier2_fetch_gate(
         domain=domain,
         auto_fetch_mode=auto_fetch_mode,
@@ -873,15 +905,14 @@ async def _tier2_playwright_fetch(
 
 
 async def _fetch_url_response(url: str) -> tuple[bytes, str, str, str]:
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return (
-            resp.content,
-            str(resp.url),
-            (resp.headers.get("content-type") or "").lower(),
-            resp.headers.get("content-disposition") or "",
-        )
+    resp = await safe_async_get(url, timeout=20.0, require_portal_allowlist=True)
+    resp.raise_for_status()
+    return (
+        resp.content,
+        str(resp.url),
+        (resp.headers.get("content-type") or "").lower(),
+        resp.headers.get("content-disposition") or "",
+    )
 
 
 def _extract_embedded_doc_url(html_text: str, base_url: str) -> Optional[str]:
@@ -914,7 +945,16 @@ def _classify_direct_doc_payload(
         unpacked = _unpack_zip_docs(content)
         if unpacked:
             return unpacked
-        return [(f"{fallback_title}.ofd", content)]
+        is_ofd = "ofd" in content_type or final_url.lower().endswith(".ofd")
+        if not is_ofd:
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    is_ofd = any(name.upper() == "OFD.XML" for name in zf.namelist())
+            except Exception:  # noqa: BLE001
+                is_ofd = False
+        if is_ofd:
+            return [(f"{fallback_title}.ofd", content)]
+        return []
     m_fn = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\r\n]+)', content_disposition, re.IGNORECASE)
     if m_fn:
         leaf = Path(m_fn.group(1).strip()).name
@@ -938,6 +978,9 @@ async def _tier1_fetch_direct_or_portal(
 
     try:
         raw, final_url, ct, cd = await _fetch_url_response(url)
+    except UnsafeUrlError as exc:
+        logger.warning("Blocked unsafe court URL %s: %s", url, exc)
+        return None, str(exc), False
     except Exception as exc:  # noqa: BLE001
         logger.debug("Direct/portal fetch failed for %s: %s", url, exc)
         return None, None, False
@@ -1061,6 +1104,12 @@ async def fetch_court_documents(
             continue
 
         needs_phone_any = needs_phone_any or needs_phone
+        if "dzsd.hbfy.gov.cn" in domain and t1_err and "验证码" in t1_err:
+            reasons.append(t1_err)
+            continue
+        if t1_err and ("不在司法/发票官方白名单内" in t1_err or "内网" in t1_err or "受限主机" in t1_err):
+            reasons.append(t1_err)
+            continue
         t2_res, t2_err, t2_needs_phone = await _tier2_playwright_fetch(
             link,
             batch_key=batch_key,

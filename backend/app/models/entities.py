@@ -108,6 +108,16 @@ class User(SQLModel, table=True):
     ics_feed_token: str = Field(
         default_factory=lambda: secrets.token_urlsafe(24), unique=True, index=True
     )
+    default_deadline_offsets_days: List[int] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+        description="个人追加期限提前提醒天数偏好",
+    )
+    default_schedule_offsets_minutes: List[int] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+        description="个人追加日程提前提醒分钟偏好",
+    )
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow, sa_column=_utc_column())
 
@@ -167,6 +177,7 @@ class Case(SQLModel, table=True):
     )
     custody_place: Optional[str] = Field(default=None, description="羁押看守所名称")
     crime_type: Optional[str] = Field(default=None, description="一般犯罪 | 流窜/多次/结伙作案")
+    charge_name: Optional[str] = Field(default=None, description="涉嫌具体罪名，如 职务侵占罪")
     trial_mode: Optional[str] = Field(default=None, description="普通程序 | 简易程序 | 速裁程序")
 
     # 归档目录
@@ -255,6 +266,9 @@ class Deadline(SQLModel, table=True):
 
     # 个人与团队提醒配置
     notify_target_type: NotifyTargetType = Field(default=NotifyTargetType.CASE_TEAM)
+    notify_owner_id: Optional[int] = Field(
+        default=None, foreign_key="users.id", description="将通知范围切换为 SELF 时的接收人"
+    )
     custom_notify_user_ids: List[int] = Field(
         default_factory=list, sa_column=Column(JSON, nullable=False)
     )
@@ -379,6 +393,13 @@ class ReminderDelivery(SQLModel, table=True):
     source_id: int
     recipient_user_ids: List[int] = Field(
         default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    sent_user_ids: List[int] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )
+    retry_count: int = Field(default=0)
+    next_retry_at: Optional[datetime] = Field(
+        default=None, sa_column=_utc_column(nullable=True)
     )
     scheduled_at: datetime = Field(sa_column=_utc_column(index=True))
     sent_at: Optional[datetime] = Field(default=None, sa_column=_utc_column(nullable=True))

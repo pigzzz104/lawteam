@@ -15,6 +15,7 @@ from app.core.security import (
     get_current_user,
     verify_password,
 )
+from app.core.url_safety import UnsafeUrlError, validate_webhook_url
 from app.database import get_session
 from app.models.entities import SystemRole, User
 
@@ -42,6 +43,8 @@ class UserSelfRead(BaseModel):
     sms_webhook_token: str
     has_sms_webhook_secret: bool
     ics_feed_token: str
+    default_deadline_offsets_days: list[int]
+    default_schedule_offsets_minutes: list[int]
     is_active: bool
     created_at: datetime
 
@@ -63,6 +66,8 @@ class UserSelfUpdate(BaseModel):
     court_auto_fetch_mode: Optional[str] = None
     calendar_color: Optional[str] = None
     sms_webhook_secret: Optional[str] = None
+    default_deadline_offsets_days: Optional[list[int]] = None
+    default_schedule_offsets_minutes: Optional[list[int]] = None
     rotate_sms_token: bool = False
     rotate_ics_token: bool = False
 
@@ -86,6 +91,8 @@ def serialize_user_self(user: User) -> UserSelfRead:
         sms_webhook_token=user.sms_webhook_token,
         has_sms_webhook_secret=bool(user.sms_webhook_secret),
         ics_feed_token=user.ics_feed_token,
+        default_deadline_offsets_days=list(user.default_deadline_offsets_days or []),
+        default_schedule_offsets_minutes=list(user.default_schedule_offsets_minutes or []),
         is_active=user.is_active,
         created_at=user.created_at,
     )
@@ -158,7 +165,24 @@ def update_me(
             )
         current_user.notify_channel = ch
     if payload.notify_target is not None:
-        current_user.notify_target = payload.notify_target.strip() or None
+        cleaned_target = payload.notify_target.strip() or None
+        eff_channel = (current_user.notify_channel or "wecom").strip().lower()
+        if cleaned_target and eff_channel == "webhook":
+            try:
+                validate_webhook_url(cleaned_target)
+            except UnsafeUrlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        current_user.notify_target = cleaned_target
+    if payload.default_deadline_offsets_days is not None:
+        current_user.default_deadline_offsets_days = sorted(
+            {int(x) for x in payload.default_deadline_offsets_days if int(x) >= 0},
+            reverse=True,
+        )
+    if payload.default_schedule_offsets_minutes is not None:
+        current_user.default_schedule_offsets_minutes = sorted(
+            {int(x) for x in payload.default_schedule_offsets_minutes if int(x) >= 0},
+            reverse=True,
+        )
     if payload.phone_os is not None:
         if payload.phone_os not in ("ios", "android"):
             raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")

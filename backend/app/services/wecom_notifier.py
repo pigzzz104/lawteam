@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -8,6 +9,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import Settings, get_settings
+from app.core.url_safety import UnsafeUrlError, validate_webhook_url
 from app.models.entities import User
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,8 @@ class DispatchResult:
     ok: bool
     dry_run: bool
     attempts: list[ChannelAttempt] = field(default_factory=list)
+    succeeded_user_ids: list[int] = field(default_factory=list)
+    failed_user_ids: list[int] = field(default_factory=list)
     error_msg: Optional[str] = None
     summary: str = ""
 
@@ -198,6 +202,9 @@ def _send_wecom_batch(
         )
 
 
+_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:-]{4,160}$")
+
+
 def _send_personal_channel(
     *,
     user: User,
@@ -237,6 +244,8 @@ def _send_personal_channel(
 
     try:
         if channel == "serverchan":
+            if not _SAFE_TOKEN_RE.match(target):
+                raise RuntimeError("Invalid ServerChan SendKey format")
             endpoint = f"https://sctapi.ftqq.com/{target}.send"
             data = _post_json(endpoint, {"title": title[:32] or "LawTeam提醒", "desp": markdown_body})
             if isinstance(data, dict) and data.get("code") not in (None, 0):
@@ -246,8 +255,8 @@ def _send_personal_channel(
                 app_token, uid = target.split(":", 1)
             else:
                 app_token, uid = settings.wxpusher_app_token.strip(), target
-            if not app_token:
-                raise RuntimeError("WxPusher requires WXPUSHER_APP_TOKEN or 'appToken:UID_xxx'")
+            if not app_token or not _SAFE_TOKEN_RE.match(uid):
+                raise RuntimeError("WxPusher requires valid appToken and UID")
             data = _post_json(
                 "https://wxpusher.zjiecode.com/api/send/message",
                 {
@@ -262,6 +271,8 @@ def _send_personal_channel(
             if isinstance(data, dict) and not data.get("success", True):
                 raise RuntimeError(f"WxPusher error: {data.get('msg') or data}")
         elif channel == "pushplus":
+            if not _SAFE_TOKEN_RE.match(target):
+                raise RuntimeError("Invalid PushPlus token format")
             data = _post_json(
                 "https://www.pushplus.plus/send",
                 {
@@ -274,10 +285,12 @@ def _send_personal_channel(
             if isinstance(data, dict) and data.get("code") not in (None, 200):
                 raise RuntimeError(f"PushPlus error: {data.get('msg') or data}")
         elif channel == "webhook":
-            if not (target.startswith("http://") or target.startswith("https://")):
-                raise RuntimeError("Webhook notify_target must be http:// or https:// URL")
+            try:
+                safe_target = validate_webhook_url(target, settings=settings)
+            except UnsafeUrlError as exc:
+                raise RuntimeError(str(exc)) from exc
             data = _post_json(
-                target,
+                safe_target,
                 {
                     "title": title,
                     "content": markdown_body,
@@ -388,6 +401,8 @@ def dispatch_notification_to_users(
 
     any_ok = any(a.ok for a in attempts)
     all_ok = bool(attempts) and all(a.ok for a in attempts)
+    succeeded_uids = sorted({uid for a in attempts if a.ok for uid in a.recipient_user_ids})
+    failed_uids = sorted({uid for a in attempts if not a.ok for uid in a.recipient_user_ids} - set(succeeded_uids))
     channels_used = ",".join(sorted({a.channel for a in attempts}))
     mode_tag = "DRY-RUN" if cfg.wecom_dry_run else "LIVE"
     summary = f"[{mode_tag}:{channels_used}] {title} -> {len(users)}人"
@@ -398,6 +413,8 @@ def dispatch_notification_to_users(
         ok=all_ok if any_ok else False,
         dry_run=cfg.wecom_dry_run,
         attempts=attempts,
+        succeeded_user_ids=succeeded_uids,
+        failed_user_ids=failed_uids,
         error_msg="; ".join(errors) if errors else None,
         summary=summary,
     )

@@ -58,14 +58,34 @@ class TestPushResponse(BaseModel):
     attempts: list[dict[str, Any]]
 
 
-@router.get("/deliveries", response_model=list[ReminderDelivery])
+class ReminderDeliveryRead(BaseModel):
+    id: Optional[int] = None
+    idempotency_key: str
+    source_type: str
+    source_id: int
+    recipient_user_ids: list[int]
+    sent_user_ids: list[int]
+    retry_count: int
+    next_retry_at: Optional[datetime] = None
+    scheduled_at: datetime
+    sent_at: Optional[datetime] = None
+    status: str
+    error_msg: Optional[str] = None
+    case_id: Optional[int] = None
+    case_title: Optional[str] = None
+    case_number: Optional[str] = None
+    source_title: Optional[str] = None
+    recipient_names: list[str] = []
+
+
+@router.get("/deliveries", response_model=list[ReminderDeliveryRead])
 def list_reminder_deliveries(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     source_type: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
-) -> list[ReminderDelivery]:
+) -> list[ReminderDeliveryRead]:
     """List reminder delivery ledger records visible to the current user (PRIVATE-isolated)."""
     assert current_user.id is not None
     base_stmt = select(ReminderDelivery).order_by(ReminderDelivery.id.desc())  # type: ignore[union-attr]
@@ -76,11 +96,12 @@ def list_reminder_deliveries(
 
     accessible_ids = get_accessible_case_ids_filter(current_user, session)
     is_admin = current_user.system_role == SystemRole.ADMIN
-    visible: list[ReminderDelivery] = []
+    visible_entries: list[tuple[ReminderDelivery, Optional[int], Optional[str]]] = []
+    cases_map: dict[int, Case] = {}
     batch_size = max(limit * 3, 200)
     offset = 0
 
-    while len(visible) < limit:
+    while len(visible_entries) < limit:
         rows = list(session.exec(base_stmt.offset(offset).limit(batch_size)).all())
         if not rows:
             break
@@ -90,9 +111,9 @@ def list_reminder_deliveries(
         sched_ids = {r.source_id for r in rows if r.source_type == "schedule"}
         triage_ids = {r.source_id for r in rows if r.source_type == "triage_alert"}
 
-        dl_cases = (
+        dl_map = (
             {
-                d.id: d.case_id
+                d.id: d
                 for d in session.exec(select(Deadline).where(Deadline.id.in_(dl_ids))).all()  # type: ignore[union-attr]
                 if d.id is not None
             }
@@ -117,36 +138,41 @@ def list_reminder_deliveries(
             if triage_ids
             else {}
         )
-        case_ids_needed = set(dl_cases.values()) | {
-            s.case_id for s in sched_map.values() if s.case_id is not None
-        } | {
-            t.matched_case_id for t in triage_map.values() if t.matched_case_id is not None
-        }
+        case_ids_needed = (
+            {d.case_id for d in dl_map.values()}
+            | {s.case_id for s in sched_map.values() if s.case_id is not None}
+            | {t.matched_case_id for t in triage_map.values() if t.matched_case_id is not None}
+        )
         private_other_cases: set[int] = set()
         if case_ids_needed:
             for c in session.exec(select(Case).where(Case.id.in_(case_ids_needed))).all():  # type: ignore[union-attr]
-                if c.id is not None and c.visibility == CaseVisibility.PRIVATE and c.owner_id != current_user.id:
-                    private_other_cases.add(c.id)
+                if c.id is not None:
+                    cases_map[c.id] = c
+                    if c.visibility == CaseVisibility.PRIVATE and c.owner_id != current_user.id:
+                        private_other_cases.add(c.id)
 
         for row in rows:
             if row.source_type == "deadline":
-                cid = dl_cases.get(row.source_id)
+                dl = dl_map.get(row.source_id)
+                if dl is None:
+                    continue
+                cid = dl.case_id
                 if cid in private_other_cases:
                     continue
                 if is_admin or cid in accessible_ids or current_user.id in (row.recipient_user_ids or []):
-                    visible.append(row)
+                    visible_entries.append((row, cid, dl.title))
             elif row.source_type == "schedule":
                 sched = sched_map.get(row.source_id)
                 if sched is None:
                     continue
                 if sched.case_id is None:
                     if sched.owner_id == current_user.id:
-                        visible.append(row)
+                        visible_entries.append((row, None, sched.title))
                 else:
                     if sched.case_id in private_other_cases:
                         continue
                     if is_admin or sched.case_id in accessible_ids or current_user.id in (row.recipient_user_ids or []):
-                        visible.append(row)
+                        visible_entries.append((row, sched.case_id, sched.title))
             elif row.source_type == "triage_alert":
                 tr = triage_map.get(row.source_id)
                 if tr is None:
@@ -154,15 +180,60 @@ def list_reminder_deliveries(
                 if tr.matched_case_id in private_other_cases:
                     continue
                 if tr.owner_user_id == current_user.id or (is_admin and tr.matched_case_id not in private_other_cases):
-                    visible.append(row)
+                    payload = tr.extracted_payload or {}
+                    tr_title = (
+                        payload.get("doc_title_hint")
+                        or payload.get("agency")
+                        or tr.source_sender
+                        or "待确认分拣通知"
+                    )
+                    visible_entries.append((row, tr.matched_case_id, str(tr_title)))
 
-            if len(visible) >= limit:
+            if len(visible_entries) >= limit:
                 break
 
         if len(rows) < batch_size:
             break
 
-    return visible
+    all_uid_needed = {
+        int(uid)
+        for row, _, _ in visible_entries
+        for uid in (row.recipient_user_ids or [])
+    }
+    user_names: dict[int, str] = {}
+    if all_uid_needed:
+        for u in session.exec(select(User).where(User.id.in_(all_uid_needed))).all():  # type: ignore[union-attr]
+            if u.id is not None:
+                user_names[u.id] = u.full_name
+
+    result: list[ReminderDeliveryRead] = []
+    for row, cid, source_title in visible_entries:
+        case = cases_map.get(cid) if cid is not None else None
+        result.append(
+            ReminderDeliveryRead(
+                id=row.id,
+                idempotency_key=row.idempotency_key,
+                source_type=row.source_type,
+                source_id=row.source_id,
+                recipient_user_ids=list(row.recipient_user_ids or []),
+                sent_user_ids=list(row.sent_user_ids or []),
+                retry_count=int(row.retry_count or 0),
+                next_retry_at=row.next_retry_at,
+                scheduled_at=row.scheduled_at,
+                sent_at=row.sent_at,
+                status=row.status,
+                error_msg=row.error_msg,
+                case_id=cid,
+                case_title=case.case_title if case is not None else None,
+                case_number=case.case_number if case is not None else None,
+                source_title=source_title,
+                recipient_names=[
+                    user_names.get(int(uid), f"成员#{uid}")
+                    for uid in (row.recipient_user_ids or [])
+                ],
+            )
+        )
+    return result
 
 
 @router.post("/run-once", response_model=ReminderSweepResponse)
