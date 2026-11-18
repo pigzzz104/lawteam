@@ -9,7 +9,16 @@ import {
   SOURCE_TYPE_LABELS,
   formatShanghaiDateTime,
 } from "@/lib/domain";
-import type { NotifyChannel, TestPushResponse } from "@/types/api";
+import type { CourtAutoFetchMode, NotifyChannel, TestPushResponse } from "@/types/api";
+
+const COURT_FETCH_MODE_HINTS: Record<CourtAutoFetchMode, string> = {
+  auto_non_judgment:
+    "传票、举证/应诉通知等程序文书自动填充尾号抓取并归档；判决书/裁定书等终局裁决签收前暂停提醒人工确认（推荐）。",
+  auto_all:
+    "收到含取件码或已知省级送达平台链接的短信后，立即自动填充手机尾号抓件并按规则归档。",
+  confirm_before_sign:
+    "所有 Tier-2 省级法院平台在签收前均先拦截待人工确认，避免误签收或触发回执。",
+};
 
 export function ReminderSettings() {
   const { user, refreshUser } = useAuth();
@@ -23,6 +32,9 @@ export function ReminderSettings() {
   const [phoneOs, setPhoneOs] = useState(user?.phone_os || "ios");
   const [phoneLast4, setPhoneLast4] = useState(user?.phone_last4 || "");
   const [idCardLast4, setIdCardLast4] = useState(user?.id_card_last4 || "");
+  const [courtFetchMode, setCourtFetchMode] = useState<CourtAutoFetchMode>(
+    user?.court_auto_fetch_mode || "confirm_before_sign"
+  );
   const [calendarColor, setCalendarColor] = useState(user?.calendar_color || "#2563eb");
 
   const [statusFilter, setStatusFilter] = useState("");
@@ -38,6 +50,7 @@ export function ReminderSettings() {
     setPhoneOs(user.phone_os || "ios");
     setPhoneLast4(user.phone_last4 || "");
     setIdCardLast4(user.id_card_last4 || "");
+    setCourtFetchMode(user.court_auto_fetch_mode || "confirm_before_sign");
     setCalendarColor(user.calendar_color || "#2563eb");
   }, [user]);
 
@@ -49,8 +62,20 @@ export function ReminderSettings() {
         phoneOs !== (user.phone_os || "ios") ||
         phoneLast4.trim() !== (user.phone_last4 || "") ||
         idCardLast4.trim() !== (user.id_card_last4 || "") ||
+        courtFetchMode !== (user.court_auto_fetch_mode || "confirm_before_sign") ||
         calendarColor !== (user.calendar_color || "#2563eb"))
   );
+
+  const buildProfilePayload = () => ({
+    notify_channel: notifyChannel,
+    notify_target: notifyTarget.trim() || null,
+    wecom_userid: wecomUserid.trim() || null,
+    phone_os: phoneOs,
+    phone_last4: phoneLast4.trim() || null,
+    id_card_last4: idCardLast4.trim() || null,
+    court_auto_fetch_mode: courtFetchMode,
+    calendar_color: calendarColor,
+  });
 
   const deliveriesQuery = useQuery({
     queryKey: ["reminder-deliveries", statusFilter],
@@ -62,16 +87,7 @@ export function ReminderSettings() {
   });
 
   const saveProfileMut = useMutation({
-    mutationFn: () =>
-      authApi.updateMe({
-        notify_channel: notifyChannel,
-        notify_target: notifyTarget.trim() || null,
-        wecom_userid: wecomUserid.trim() || null,
-        phone_os: phoneOs,
-        phone_last4: phoneLast4.trim() || null,
-        id_card_last4: idCardLast4.trim() || null,
-        calendar_color: calendarColor,
-      }),
+    mutationFn: () => authApi.updateMe(buildProfilePayload()),
     onSuccess: async () => {
       await refreshUser();
       setErrorMsg(null);
@@ -86,15 +102,7 @@ export function ReminderSettings() {
   const testPushMut = useMutation({
     mutationFn: async () => {
       if (isDirty) {
-        await authApi.updateMe({
-          notify_channel: notifyChannel,
-          notify_target: notifyTarget.trim() || null,
-          wecom_userid: wecomUserid.trim() || null,
-          phone_os: phoneOs,
-          phone_last4: phoneLast4.trim() || null,
-          id_card_last4: idCardLast4.trim() || null,
-          calendar_color: calendarColor,
-        });
+        await authApi.updateMe(buildProfilePayload());
         await refreshUser();
       }
       return remindersApi.testPush();
@@ -286,6 +294,25 @@ export function ReminderSettings() {
                 className="lt-input"
               />
             </div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <label htmlFor="rs-tier2-mode" className="block text-xs font-semibold text-slate-700 mb-1">
+              省级法院（Tier-2）自动取件策略
+            </label>
+            <select
+              id="rs-tier2-mode"
+              value={courtFetchMode}
+              onChange={(e) => setCourtFetchMode(e.target.value as CourtAutoFetchMode)}
+              className="lt-input"
+            >
+              <option value="auto_non_judgment">仅自动抓非裁决通知（传票/举证/应诉自动，判决/裁定人工确认）</option>
+              <option value="auto_all">全部 Tier-2 平台自动填充尾号抓取</option>
+              <option value="confirm_before_sign">全部签收前先暂停待人工确认（保守）</option>
+            </select>
+            <p className="mt-1.5 rounded-lg bg-slate-50 border border-slate-200 p-2 text-[11px] text-slate-600 leading-relaxed">
+              {COURT_FETCH_MODE_HINTS[courtFetchMode]}
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">

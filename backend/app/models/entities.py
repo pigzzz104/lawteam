@@ -94,6 +94,10 @@ class User(SQLModel, table=True):
     phone_os: str = Field(default="ios", description="ios | android")
     phone_last4: Optional[str] = Field(default=None, description="手机号后4位，用于法院取件回填")
     id_card_last4: Optional[str] = Field(default=None, description="身份证后4位，用于法院取件回填")
+    court_auto_fetch_mode: Optional[str] = Field(
+        default=None,
+        description="Tier-2 法院自动取件策略覆盖: confirm_before_sign | auto_non_judgment | auto_all",
+    )
     calendar_color: str = Field(default="#3b82f6", description="团队日历中代表该律师的颜色")
     sms_webhook_token: str = Field(
         default_factory=lambda: secrets.token_urlsafe(16), unique=True, index=True

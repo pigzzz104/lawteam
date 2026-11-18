@@ -94,6 +94,7 @@ def _send_wecom_batch(
     title: str,
     markdown_body: str,
     textcard_url: Optional[str],
+    card_buttons: Optional[list[dict[str, str]]],
     settings: Settings,
     http_client: Optional[httpx.Client],
 ) -> ChannelAttempt:
@@ -109,25 +110,47 @@ def _send_wecom_batch(
             response_payload={
                 "dry_run": True,
                 "touser": touser,
-                "msgtype": "markdown",
+                "msgtype": "template_card" if card_buttons else ("textcard" if textcard_url else "markdown"),
                 "title": title,
+                "card_buttons": card_buttons or [],
             },
         )
 
     try:
         token = _get_wecom_access_token(settings, http_client=http_client)
-        payload: dict[str, Any] = {
-            "touser": touser,
-            "agentid": int(settings.wecom_agent_id) if settings.wecom_agent_id.isdigit() else settings.wecom_agent_id,
-            "msgtype": "markdown",
-            "markdown": {"content": full_markdown},
-            "enable_duplicate_check": 1,
-            "duplicate_check_interval": 300,
-        }
-        if textcard_url:
+        agent_id: int | str = (
+            int(settings.wecom_agent_id) if settings.wecom_agent_id.isdigit() else settings.wecom_agent_id
+        )
+        if card_buttons:
+            payload: dict[str, Any] = {
+                "touser": touser,
+                "agentid": agent_id,
+                "msgtype": "template_card",
+                "template_card": {
+                    "card_type": "button_interaction",
+                    "main_title": {"title": title[:64]},
+                    "sub_title_text": markdown_body[:160],
+                    "task_id": f"lawteam_{int(time.time() * 1000)}_{user_ids[0] if user_ids else 0}",
+                    "button_list": [
+                        {
+                            "text": str(btn.get("text") or "确认")[:16],
+                            "style": int(btn.get("style") or 1),
+                            "key": str(btn.get("key") or ""),
+                        }
+                        for btn in card_buttons[:6]
+                        if btn.get("key")
+                    ],
+                    **(
+                        {"card_action": {"type": 1, "url": textcard_url}}
+                        if textcard_url
+                        else {}
+                    ),
+                },
+            }
+        elif textcard_url:
             payload = {
                 "touser": touser,
-                "agentid": payload["agentid"],
+                "agentid": agent_id,
                 "msgtype": "textcard",
                 "textcard": {
                     "title": title[:128],
@@ -135,6 +158,15 @@ def _send_wecom_batch(
                     "url": textcard_url,
                     "btntxt": "查看详情",
                 },
+            }
+        else:
+            payload = {
+                "touser": touser,
+                "agentid": agent_id,
+                "msgtype": "markdown",
+                "markdown": {"content": full_markdown},
+                "enable_duplicate_check": 1,
+                "duplicate_check_interval": 300,
             }
 
         url = "https://qyapi.weixin.qq.com/cgi-bin/message/send"
@@ -283,6 +315,7 @@ def dispatch_notification_to_users(
     title: str,
     markdown_body: str,
     textcard_url: Optional[str] = None,
+    card_buttons: Optional[list[dict[str, str]]] = None,
     settings: Optional[Settings] = None,
     http_client: Optional[httpx.Client] = None,
 ) -> DispatchResult:
@@ -345,6 +378,7 @@ def dispatch_notification_to_users(
             title=title,
             markdown_body=markdown_body,
             textcard_url=textcard_url,
+            card_buttons=card_buttons,
             settings=cfg,
             http_client=http_client,
         )

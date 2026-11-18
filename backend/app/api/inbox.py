@@ -37,10 +37,14 @@ from app.models.entities import (
 )
 from app.services import file_bridge
 from app.services.court_fetcher import parse_court_pdf_bytes
-from app.services.invoice_fetcher import format_invoice_filename, parse_invoice_pdf_bytes
+from app.services.invoice_fetcher import format_invoice_filename, parse_invoice_bytes
 from app.services.sms_normalizer import compute_sms_hashes, NormalizedSmsPayload
 from app.services.sms_parser import CaseMatchResult, match_case_with_confidence
-from app.services.triage_archiver import apply_triage_to_case, reopen_triage_item
+from app.services.triage_archiver import (
+    apply_triage_to_case,
+    mark_triage_ignored,
+    reopen_triage_item,
+)
 from app.services.triage_pipeline import (
     enrich_and_fetch_triage_item,
     evaluate_and_apply_auto_triage,
@@ -337,8 +341,9 @@ async def manual_upload_triage_files(
         suffix = Path(orig_name).suffix.lower() or ".pdf"
 
         if item_type == "invoice_archive":
-            meta = parse_invoice_pdf_bytes(raw_bytes, fallback_name=orig_name) if suffix == ".pdf" else {}
-            fmt_name = format_invoice_filename(meta, fallback_name=orig_name)
+            inv_ext = suffix if suffix in (".pdf", ".ofd", ".xml") else ".pdf"
+            meta = parse_invoice_bytes(raw_bytes, ext=inv_ext, fallback_name=orig_name)
+            fmt_name = format_invoice_filename(meta, fallback_name=orig_name, ext=inv_ext)
             _, rel_path = file_bridge.save_unclaimed_invoice(fmt_name, raw_bytes)
             staged_rels.append(rel_path)
             invoice_meta = meta
@@ -633,17 +638,7 @@ def ignore_triage_item(
     if item.status == TriageStatus.CONFIRMED:
         raise HTTPException(status_code=409, detail="Cannot ignore an already confirmed triage item")
 
-    item.status = TriageStatus.IGNORED
-    session.add(item)
-    record_audit_log(
-        session,
-        actor_user_id=current_user.id,
-        action="inbox.ignore",
-        entity_type="inbox_triage_item",
-        entity_id=item.id,
-        case_id=item.matched_case_id,
-        detail={"item_type": item.item_type},
-    )
+    mark_triage_ignored(session, item=item, actor_user=current_user, source="inbox")
     session.commit()
     session.refresh(item)
     return _serialize_triage_items(session, [item])[0]

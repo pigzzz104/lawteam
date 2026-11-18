@@ -15,6 +15,7 @@ export type RiskLevel = "critical" | "high" | "normal" | "low";
 export type NotifyTargetType = "self" | "case_team" | "by_role" | "custom";
 export type TriageStatus = "pending" | "manual" | "confirmed" | "ignored";
 export type NotifyChannel = "wecom" | "serverchan" | "wxpusher" | "pushplus" | "webhook";
+export type CourtAutoFetchMode = "confirm_before_sign" | "auto_non_judgment" | "auto_all";
 
 export interface HealthResponse {
   status: string;
@@ -36,6 +37,7 @@ export interface UserSelfRead {
   phone_os: string;
   phone_last4: string | null;
   id_card_last4: string | null;
+  court_auto_fetch_mode: CourtAutoFetchMode;
   calendar_color: string;
   sms_webhook_token: string;
   has_sms_webhook_secret: boolean;
@@ -55,6 +57,7 @@ export interface UserSummary {
   phone_os: string;
   phone_last4: string | null;
   id_card_last4: string | null;
+  court_auto_fetch_mode: CourtAutoFetchMode;
   calendar_color: string;
   is_active: boolean;
   created_at: string;

@@ -7,6 +7,7 @@ import type {
   CaseListItem,
   CaseMemberRole,
   CaseVisibility,
+  CourtAutoFetchMode,
   Deadline,
   DeadlineRule,
   DocumentRecord,
@@ -130,6 +131,7 @@ export const authApi = {
     phone_os?: string;
     phone_last4?: string | null;
     id_card_last4?: string | null;
+    court_auto_fetch_mode?: CourtAutoFetchMode | null;
     calendar_color?: string;
     sms_webhook_secret?: string | null;
     rotate_sms_token?: boolean;
@@ -154,6 +156,7 @@ export const usersApi = {
     phone_os?: string;
     phone_last4?: string | null;
     id_card_last4?: string | null;
+    court_auto_fetch_mode?: CourtAutoFetchMode | null;
     calendar_color?: string;
   }) =>
     apiFetch<UserSummary>("/api/users", {

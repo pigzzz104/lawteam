@@ -9,6 +9,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.config import ALLOWED_COURT_AUTO_FETCH_MODES, get_settings
 from app.core.security import (
     create_access_token,
     get_current_user,
@@ -36,6 +37,7 @@ class UserSelfRead(BaseModel):
     phone_os: str
     phone_last4: Optional[str]
     id_card_last4: Optional[str]
+    court_auto_fetch_mode: str
     calendar_color: str
     sms_webhook_token: str
     has_sms_webhook_secret: bool
@@ -58,6 +60,7 @@ class UserSelfUpdate(BaseModel):
     phone_os: Optional[str] = None
     phone_last4: Optional[str] = None
     id_card_last4: Optional[str] = None
+    court_auto_fetch_mode: Optional[str] = None
     calendar_color: Optional[str] = None
     sms_webhook_secret: Optional[str] = None
     rotate_sms_token: bool = False
@@ -66,6 +69,7 @@ class UserSelfUpdate(BaseModel):
 
 def serialize_user_self(user: User) -> UserSelfRead:
     assert user.id is not None
+    eff_fetch_mode = user.court_auto_fetch_mode or get_settings().court_auto_fetch_mode
     return UserSelfRead(
         id=user.id,
         username=user.username,
@@ -77,6 +81,7 @@ def serialize_user_self(user: User) -> UserSelfRead:
         phone_os=user.phone_os,
         phone_last4=user.phone_last4,
         id_card_last4=user.id_card_last4,
+        court_auto_fetch_mode=eff_fetch_mode,
         calendar_color=user.calendar_color,
         sms_webhook_token=user.sms_webhook_token,
         has_sms_webhook_secret=bool(user.sms_webhook_secret),
@@ -162,6 +167,17 @@ def update_me(
         current_user.phone_last4 = payload.phone_last4.strip()[:4] or None
     if payload.id_card_last4 is not None:
         current_user.id_card_last4 = payload.id_card_last4.strip()[:4] or None
+    if payload.court_auto_fetch_mode is not None:
+        mode = payload.court_auto_fetch_mode.strip().lower()
+        if not mode:
+            current_user.court_auto_fetch_mode = None
+        elif mode not in ALLOWED_COURT_AUTO_FETCH_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"court_auto_fetch_mode must be one of {ALLOWED_COURT_AUTO_FETCH_MODES}",
+            )
+        else:
+            current_user.court_auto_fetch_mode = mode
     if payload.calendar_color is not None:
         current_user.calendar_color = payload.calendar_color.strip()
     if payload.sms_webhook_secret is not None:

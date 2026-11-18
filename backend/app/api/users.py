@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.config import ALLOWED_COURT_AUTO_FETCH_MODES
 from app.core.security import (
     get_current_user,
     hash_password,
@@ -30,6 +31,7 @@ class UserSummary(BaseModel):
     phone_os: str
     phone_last4: Optional[str] = None
     id_card_last4: Optional[str] = None
+    court_auto_fetch_mode: Optional[str] = None
     calendar_color: str
     is_active: bool
     created_at: datetime
@@ -58,6 +60,7 @@ class UserAdminUpdate(BaseModel):
     phone_os: Optional[str] = None
     phone_last4: Optional[str] = None
     id_card_last4: Optional[str] = None
+    court_auto_fetch_mode: Optional[str] = None
     calendar_color: Optional[str] = None
     is_active: Optional[bool] = None
     new_password: Optional[str] = None
@@ -76,6 +79,7 @@ def _to_summary(u: User) -> UserSummary:
         phone_os=u.phone_os,
         phone_last4=u.phone_last4,
         id_card_last4=u.id_card_last4,
+        court_auto_fetch_mode=u.court_auto_fetch_mode,
         calendar_color=u.calendar_color,
         is_active=u.is_active,
         created_at=u.created_at,
@@ -176,6 +180,17 @@ def update_user(
         user.phone_last4 = payload.phone_last4.strip()[:4] or None
     if payload.id_card_last4 is not None:
         user.id_card_last4 = payload.id_card_last4.strip()[:4] or None
+    if payload.court_auto_fetch_mode is not None:
+        mode = payload.court_auto_fetch_mode.strip().lower()
+        if not mode:
+            user.court_auto_fetch_mode = None
+        elif mode not in ALLOWED_COURT_AUTO_FETCH_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"court_auto_fetch_mode must be one of {ALLOWED_COURT_AUTO_FETCH_MODES}",
+            )
+        else:
+            user.court_auto_fetch_mode = mode
     if payload.calendar_color is not None:
         user.calendar_color = payload.calendar_color
     if payload.is_active is not None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
@@ -297,5 +297,28 @@ def reopen_triage_item(
         entity_id=item.id,
         case_id=prev_case_id,
         detail={"restored_files": restored_files},
+    )
+    return item
+
+
+def mark_triage_ignored(
+    session: Session,
+    *,
+    item: InboxTriageItem,
+    actor_user: User,
+    source: str = "inbox",
+) -> InboxTriageItem:
+    """Atomically ignore a non-confirmed triage item and write an audit entry."""
+    assert actor_user.id is not None
+    item.status = TriageStatus.IGNORED
+    session.add(item)
+    record_audit_log(
+        session,
+        actor_user_id=actor_user.id,
+        action="inbox.ignore",
+        entity_type="inbox_triage_item",
+        entity_id=item.id,
+        case_id=item.matched_case_id,
+        detail={"item_type": item.item_type, "source": source},
     )
     return item

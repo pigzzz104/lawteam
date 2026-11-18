@@ -10,6 +10,7 @@ import httpx
 from sqlmodel import Session, select
 
 from app.config import Settings, get_settings
+from app.core.security import create_triage_action_token
 from app.models.entities import (
     Case,
     CaseMember,
@@ -160,6 +161,7 @@ def _deliver_with_idempotency(
     settings: Settings,
     http_client: Optional[httpx.Client],
     textcard_url: Optional[str] = None,
+    card_buttons: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     existing = session.exec(
         select(ReminderDelivery).where(ReminderDelivery.idempotency_key == idempotency_key)
@@ -194,6 +196,7 @@ def _deliver_with_idempotency(
         title=title,
         markdown_body=markdown_body,
         textcard_url=textcard_url,
+        card_buttons=card_buttons,
         settings=settings,
         http_client=http_client,
     )
@@ -379,6 +382,52 @@ def _evaluate_schedules(
             )
 
 
+def _build_triage_card_actions(
+    item: InboxTriageItem,
+    *,
+    settings: Settings,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Generate signed quick-action links and WeCom interactive template_card buttons."""
+    assert item.id is not None
+    api_base = settings.public_api_url.rstrip("/")
+    buttons: list[dict[str, Any]] = []
+    links_md: list[str] = []
+
+    if item.matched_case_id is not None:
+        confirm_tok = create_triage_action_token(
+            user_id=item.owner_user_id,
+            triage_id=item.id,
+            action="confirm",
+            case_id=item.matched_case_id,
+        )
+        confirm_url = f"{api_base}/api/webhooks/triage-action?token={confirm_tok}"
+        links_md.append(f"[一键确认归入推荐案件]({confirm_url})")
+        buttons.append(
+            {
+                "text": "确认归入推荐案件",
+                "style": 1,
+                "key": f"triage:confirm:{item.id}:{item.matched_case_id}",
+            }
+        )
+
+    ignore_tok = create_triage_action_token(
+        user_id=item.owner_user_id,
+        triage_id=item.id,
+        action="ignore",
+    )
+    ignore_url = f"{api_base}/api/webhooks/triage-action?token={ignore_tok}"
+    links_md.append(f"[忽略该条]({ignore_url})")
+    buttons.append(
+        {
+            "text": "忽略",
+            "style": 4,
+            "key": f"triage:ignore:{item.id}",
+        }
+    )
+    quick_line = "\n- **微信快捷操作**：" + " | ".join(links_md)
+    return quick_line, buttons
+
+
 def _evaluate_manual_triage_alerts(
     *,
     session: Session,
@@ -399,11 +448,14 @@ def _evaluate_manual_triage_alerts(
         case_no = payload.get("case_number") or "未识别案号"
         agency = payload.get("agency") or "司法送达平台"
         links = payload.get("court_links") or payload.get("invoice_links") or []
-        link_line = f"\n- **原始链接**：{links[0]}" if links else ""
+        first_url = links[0].get("url") if links and isinstance(links[0], dict) else (links[0] if links else "")
+        link_line = f"\n- **原始链接**：{first_url}" if first_url else ""
+        quick_line, card_buttons = _build_triage_card_actions(item, settings=settings)
         markdown_body = (
             f"- **来源机关**：{agency}（{case_no}）\n"
             f"- **需要人工处理原因**：{item.error_or_manual_reason or '需人工点击核验或补充手机号后4位下载文书'}"
             f"{link_line}"
+            f"{quick_line}"
         )
         base_url = settings.frontend_base_url.rstrip("/")
         _deliver_with_idempotency(
@@ -421,6 +473,7 @@ def _evaluate_manual_triage_alerts(
             settings=settings,
             http_client=http_client,
             textcard_url=f"{base_url}/inbox?id={item.id}",
+            card_buttons=card_buttons,
         )
 
 
@@ -473,6 +526,7 @@ def push_pending_confirm_alert(
     )
     reason = payload.get("triage_reason") or "暂无覆盖规则或未匹配到唯一案件，请人工确认归档"
     base_url = cfg.frontend_base_url.rstrip("/")
+    quick_line, card_buttons = _build_triage_card_actions(triage_item, settings=cfg)
 
     _deliver_with_idempotency(
         session=session,
@@ -483,12 +537,18 @@ def push_pending_confirm_alert(
         scheduled_at_utc=now_utc,
         is_completed_skip=False,
         title=f"【待人工确认归档】{hint}（{case_no}）",
-        markdown_body=f"- **事项**：{hint}\n- **案号**：{case_no}\n- **需确认原因**：{reason}",
+        markdown_body=(
+            f"- **事项**：{hint}\n"
+            f"- **案号**：{case_no}\n"
+            f"- **需确认原因**：{reason}"
+            f"{quick_line}"
+        ),
         users_by_id=users_by_id,
         summary=summary,
         settings=cfg,
         http_client=http_client,
         textcard_url=f"{base_url}/inbox?id={triage_item.id}",
+        card_buttons=card_buttons,
     )
     session.commit()
     return summary

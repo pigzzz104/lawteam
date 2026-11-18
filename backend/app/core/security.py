@@ -73,6 +73,41 @@ def decode_access_token(token: str) -> dict[str, Any]:
         ) from exc
 
 
+def create_triage_action_token(
+    *,
+    user_id: int,
+    triage_id: int,
+    action: str,
+    case_id: Optional[int] = None,
+    expires_hours: int = 72,
+) -> str:
+    """Create a signed JWT token for one-tap WeChat/WeCom triage confirmation or ignore."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "scope": "wecom_triage_action",
+        "sub": str(user_id),
+        "triage_id": triage_id,
+        "action": action,
+        "iat": now,
+        "exp": now + timedelta(hours=expires_hours),
+    }
+    if case_id is not None:
+        payload["case_id"] = case_id
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_triage_action_token(token: str) -> dict[str, Any]:
+    """Decode and validate a signed WeChat/WeCom triage quick-action token."""
+    payload = decode_access_token(token)
+    if payload.get("scope") != "wecom_triage_action":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid triage action token scope",
+        )
+    return payload
+
+
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     session: Session = Depends(get_session),

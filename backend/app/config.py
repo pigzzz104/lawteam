@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+ALLOWED_COURT_AUTO_FETCH_MODES = ("confirm_before_sign", "auto_non_judgment", "auto_all")
 
 
 class Settings(BaseSettings):
@@ -33,14 +34,19 @@ class Settings(BaseSettings):
     cases_root: str = str(ROOT_DIR / "data" / "cases")
 
     # Court fetching & auto-archiving policy
-    court_auto_fetch_mode: Literal["confirm_before_sign", "auto_all"] = "confirm_before_sign"
+    court_auto_fetch_mode: Literal[
+        "confirm_before_sign", "auto_non_judgment", "auto_all"
+    ] = "confirm_before_sign"
     auto_archive_enabled: bool = True
     frontend_base_url: str = "http://127.0.0.1:5173"
+    public_api_url: str = "http://127.0.0.1:8000"
 
     # Enterprise WeChat & Personal WeChat Push Gateways
     wecom_corp_id: str = ""
     wecom_agent_id: str = ""
     wecom_secret: str = ""
+    wecom_callback_token: str = ""
+    wecom_encoding_aes_key: str = ""
     wecom_dry_run: bool = True
     wxpusher_app_token: str = ""
     enable_reminder_scheduler: bool = True

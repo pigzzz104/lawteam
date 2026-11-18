@@ -433,12 +433,15 @@ async def enrich_and_fetch_triage_item(
             phone_tail = (phone_last4_override or owner.phone_last4 or "").strip() or None
             id_tail = (id_card_last4_override or owner.id_card_last4 or "").strip() or None
             batch_key = f"triage_{triage.id}"
+            eff_fetch_mode = owner.court_auto_fetch_mode or get_settings().court_auto_fetch_mode
             court_res = await fetch_court_documents(
                 payload,
                 batch_key=batch_key,
                 phone_last4=phone_tail,
                 id_card_last4=id_tail,
                 confirm_sign=confirm_sign,
+                auto_fetch_mode=eff_fetch_mode,
+                sms_text=sms_content,
             )
             payload["fetch_tier"] = court_res.tier_used
             payload["requires_phone_last4"] = court_res.requires_phone_last4
