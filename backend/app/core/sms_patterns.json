@@ -48,7 +48,7 @@
       "canonical_domain": "dzsd.hbfy.gov.cn",
       "tier": 2,
       "description": "湖北法院电子送达平台",
-      "pattern": "https?://[^\\s/]+/(?:hb/msg=[a-zA-Z0-9]+|sfsddz\\b)",
+      "pattern": "https?://[^\\s/]+/(?:hb/msg=[a-zA-Z0-9_-]+|\\?msg=[a-zA-Z0-9_-]+|sfsddz\\b[^\\s]*)",
       "required_params": [],
       "download_strategy": "api_or_playwright"
     },
@@ -123,7 +123,7 @@
     "administrative": ["行初", "行终", "行再", "行申", "行赔", "行政复议", "行政诉讼"],
     "labor_arbitration": ["劳人仲", "劳动人事争议", "劳动争议仲裁"],
     "commercial_arb": ["贸仲", "仲字", "仲裁委员会", "商事仲裁"],
-    "enforcement": ["执保", "执异", "执恢", "执复", "首次执行", "执\\d+号"],
+    "enforcement": ["执保", "执异", "执恢", "执复", "首次执行", "执第?\\d+号"],
     "civil": ["民初", "民终", "民再", "民申", "知民", "商初", "诉前调"]
   },
   "event_type_keywords": {

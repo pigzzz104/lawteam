@@ -225,6 +225,8 @@ def list_inbox_items(
     item_type: Optional[str] = Query(default=None),
     matched_case_id: Optional[int] = Query(default=None),
     auto_archived: Optional[bool] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[InboxTriageRead]:
@@ -244,7 +246,8 @@ def list_inbox_items(
         ]
 
     visible = filter_visible_triage_items(session, current_user, all_items)
-    return _serialize_triage_items(session, visible)
+    paged = visible[offset : offset + limit]
+    return _serialize_triage_items(session, paged)
 
 
 @router.post("/simulate", response_model=InboxTriageRead, status_code=status.HTTP_201_CREATED)
@@ -278,11 +281,10 @@ async def simulate_sms_ingest(
         phone_last4_override=payload.phone_last4,
         confirm_sign=payload.confirm_sign,
         run_fetch=payload.auto_fetch,
+        session=session,
     )
-    session.expire_all()
-    refreshed = session.get(InboxTriageItem, triage.id)
-    assert refreshed is not None
-    return _serialize_triage_items(session, [refreshed])[0]
+    session.refresh(triage)
+    return _serialize_triage_items(session, [triage])[0]
 
 
 @router.post("/manual-upload", response_model=InboxTriageRead, status_code=status.HTTP_201_CREATED)
@@ -306,6 +308,7 @@ async def manual_upload_triage_files(
     batch_key = f"manual_{secrets.token_hex(6)}"
     staged_rels: list[str] = []
     parsed_docs: list[dict[str, Any]] = []
+    invoice_metas: list[dict[str, Any]] = []
     invoice_meta: Optional[dict[str, Any]] = None
     pending_docs_to_insert: list[Document] = []
 
@@ -320,7 +323,9 @@ async def manual_upload_triage_files(
             fmt_name = format_invoice_filename(meta, fallback_name=orig_name, ext=inv_ext)
             _, rel_path = file_bridge.save_unclaimed_invoice(fmt_name, raw_bytes)
             staged_rels.append(rel_path)
-            invoice_meta = meta
+            invoice_metas.append(meta)
+            if invoice_meta is None:
+                invoice_meta = meta
             pending_docs_to_insert.append(
                 Document(
                     case_id=None,
@@ -343,32 +348,29 @@ async def manual_upload_triage_files(
         "notes": notes,
         "parsed_docs": parsed_docs,
     }
+    if invoice_metas:
+        payload["invoice_metas"] = invoice_metas
     if invoice_meta:
         payload["invoice_meta"] = invoice_meta
-    if parsed_docs:
-        first_doc = parsed_docs[0]
-        if first_doc.get("case_no"):
-            payload["case_number"] = first_doc["case_no"]
+    for doc_item in parsed_docs:
+        if doc_item.get("case_no") and not payload.get("case_number"):
+            payload["case_number"] = doc_item["case_no"]
         for k in ("case_number", "hearing_time", "hearing_location", "authority_specified_days"):
-            if first_doc.get(k):
-                payload[k] = first_doc[k]
-        if first_doc.get("doc_event_type"):
-            payload["event_type_guess"] = first_doc["doc_event_type"]
-        if first_doc.get("document_type"):
-            payload["doc_title_hint"] = first_doc["document_type"]
+            if doc_item.get(k) and not payload.get(k):
+                payload[k] = doc_item[k]
+        if doc_item.get("doc_event_type") and not payload.get("event_type_guess"):
+            payload["event_type_guess"] = doc_item["doc_event_type"]
+        if doc_item.get("document_type") and not payload.get("doc_title_hint"):
+            payload["doc_title_hint"] = doc_item["document_type"]
 
     if explicit_case is not None:
         match_res = CaseMatchResult(case=explicit_case, confidence="exact_case_number")
     else:
-        extra = " ".join(
-            str(v)
-            for v in (
-                notes,
-                (invoice_meta or {}).get("remark"),
-                (invoice_meta or {}).get("buyer_name"),
-            )
-            if v
-        )
+        extra_parts = [notes]
+        for m in invoice_metas:
+            extra_parts.append(m.get("remark"))
+            extra_parts.append(m.get("buyer_name"))
+        extra = " ".join(str(v) for v in extra_parts if v)
         match_res = match_case_with_confidence(session, current_user, payload, extra_text=extra)
 
     triage = InboxTriageItem(
@@ -421,11 +423,10 @@ async def retry_fetch_triage_item(
         id_card_last4_override=payload.id_card_last4,
         confirm_sign=payload.confirm_sign,
         run_fetch=True,
+        session=session,
     )
-    session.expire_all()
-    refreshed = session.get(InboxTriageItem, triage_id)
-    assert refreshed is not None
-    return _serialize_triage_items(session, [refreshed])[0]
+    session.refresh(item)
+    return _serialize_triage_items(session, [item])[0]
 
 
 @router.get("/{triage_id}/files/download")
@@ -463,12 +464,30 @@ def confirm_triage_item(
 ) -> InboxConfirmResponse:
     """Atomically confirm a triage item: create/link Case, move files, insert Event + Deadlines + Schedule."""
     assert current_user.id is not None
-    item = _get_accessible_triage_or_404(session, current_user, triage_id)
+    locked = session.exec(
+        select(InboxTriageItem)
+        .where(InboxTriageItem.id == triage_id)
+        .with_for_update()
+    ).first()
+    item = check_triage_access(session, current_user, locked)
     if item.status == TriageStatus.CONFIRMED:
         raise HTTPException(status_code=409, detail="Triage item already confirmed")
 
+    if payload.file_subfolder and payload.file_subfolder not in file_bridge.STANDARD_CASE_SUBFOLDERS:
+        raise HTTPException(status_code=400, detail=f"Invalid file_subfolder: {payload.file_subfolder}")
+    ch = payload.create_hearing
+    if ch is not None:
+        st_chk = ch.start_time.replace(tzinfo=timezone.utc) if ch.start_time.tzinfo is None else ch.start_time
+        en_chk = ch.end_time.replace(tzinfo=timezone.utc) if ch.end_time.tzinfo is None else ch.end_time
+        if en_chk <= st_chk:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="create_hearing.end_time must be after start_time",
+            )
+
     now = utcnow()
     created_case = False
+    new_case_folder_to_create: Optional[str] = None
 
     try:
         if payload.case_id is not None:
@@ -491,7 +510,6 @@ def confirm_triage_item(
                 client_name=cc.client_name,
                 case_title=cc.case_title,
             )
-            file_bridge.ensure_case_directories(folder_rel_path)
             target_case = Case(
                 case_title=cc.case_title.strip(),
                 case_number=cc.case_number.strip() if cc.case_number else None,
@@ -503,6 +521,7 @@ def confirm_triage_item(
                 owner_id=current_user.id,
                 client_name=cc.client_name.strip(),
                 handling_agency=cc.handling_agency,
+                crime_type="一般犯罪" if cc.case_category == CaseCategory.CRIMINAL else None,
                 folder_rel_path=folder_rel_path,
                 created_at=now,
                 updated_at=now,
@@ -517,16 +536,13 @@ def confirm_triage_item(
                 )
             )
             created_case = True
+            new_case_folder_to_create = folder_rel_path
         else:
             raise HTTPException(
                 status_code=400,
                 detail="Must specify either case_id or create_case when confirming triage item",
             )
 
-        if payload.file_subfolder and payload.file_subfolder not in file_bridge.STANDARD_CASE_SUBFOLDERS:
-            raise HTTPException(status_code=400, detail=f"Invalid file_subfolder: {payload.file_subfolder}")
-
-        ch = payload.create_hearing
         if ch is not None:
             try:
                 res = apply_triage_to_case(
@@ -573,6 +589,8 @@ def confirm_triage_item(
                 auto_archived=False,
                 created_case=created_case,
             )
+        if new_case_folder_to_create:
+            file_bridge.ensure_case_directories(new_case_folder_to_create)
         session.commit()
     except HTTPException:
         session.rollback()
@@ -616,6 +634,20 @@ def reopen_triage_endpoint(
     return _serialize_triage_items(session, [item])[0]
 
 
+def _cleanup_orphan_unclaimed_docs(session: Session, item: InboxTriageItem) -> None:
+    if item.item_type != "invoice_archive":
+        return
+    for rel in list(item.downloaded_files or []):
+        doc = session.exec(
+            select(Document).where(
+                Document.rel_file_path == rel,
+                Document.case_id == None,  # noqa: E711
+            )
+        ).first()
+        if doc is not None:
+            session.delete(doc)
+
+
 @router.post("/{triage_id}/ignore", response_model=InboxTriageRead)
 def ignore_triage_item(
     triage_id: int,
@@ -627,6 +659,7 @@ def ignore_triage_item(
     if item.status == TriageStatus.CONFIRMED:
         raise HTTPException(status_code=409, detail="Cannot ignore an already confirmed triage item")
 
+    _cleanup_orphan_unclaimed_docs(session, item)
     mark_triage_ignored(session, item=item, actor_user=current_user, source="inbox")
     session.commit()
     session.refresh(item)
@@ -649,6 +682,7 @@ def batch_ignore_triage_items(
             continue
         if item.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
             continue
+        _cleanup_orphan_unclaimed_docs(session, item)
         item.status = TriageStatus.IGNORED
         session.add(item)
         record_audit_log(

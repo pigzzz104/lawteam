@@ -15,6 +15,8 @@ from app.core.security import record_audit_log
 from app.database import engine
 from app.models.entities import (
     AutoTriagePolicy,
+    Case,
+    CaseCategory,
     DeadlineRule,
     Document,
     InboxTriageItem,
@@ -29,10 +31,16 @@ from app.services.sms_normalizer import NormalizedSmsPayload
 from app.services.sms_parser import (
     CaseMatchResult,
     match_case_with_confidence,
+    normalize_case_number,
     parse_sms_regex,
     parse_sms_with_optional_llm,
 )
-from app.services.triage_archiver import apply_triage_to_case
+from app.services.triage_archiver import (
+    CaseGlobalConflictError,
+    apply_triage_to_case,
+    auto_create_case_for_triage,
+    find_global_cases_by_number,
+)
 
 logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -159,7 +167,7 @@ def evaluate_and_apply_auto_triage(
         )
         return triage
 
-    # 2. Electronic invoice default auto-archive when unambiguously matched to a case
+    # 2. Electronic invoice default auto-archive when unambiguously matched (or clear case_number -> auto-create)
     if triage.item_type == "invoice_archive":
         if not triage.downloaded_files:
             payload["triage_decision"] = "needs_confirm"
@@ -167,11 +175,11 @@ def evaluate_and_apply_auto_triage(
             triage.extracted_payload = payload
             return triage
 
+        inv_policy = _policy_requires_confirm(policies, "invoice_archive")
         if (
             match_res.confidence in ("exact_case_number", "unique_client", "unique_client_alias")
             and match_res.case is not None
         ):
-            inv_policy = _policy_requires_confirm(policies, "invoice_archive")
             if inv_policy is not None:
                 payload["triage_decision"] = "needs_confirm"
                 payload["triage_reason"] = (
@@ -191,23 +199,181 @@ def evaluate_and_apply_auto_triage(
             )
             return triage
 
+        # No accessible active match: if invoice/SMS explicitly carries a case_number, check global dedup & auto-create
+        inv_case_no = normalize_case_number(payload.get("case_number"))
+        if match_res.confidence == "none" and inv_case_no:
+            if inv_policy is not None:
+                payload["triage_decision"] = "needs_confirm"
+                payload["triage_reason"] = (
+                    f"识别到案号 {inv_case_no}，但团队策略已将「{inv_policy.label}」设为人工二次复核"
+                )
+                triage.extracted_payload = payload
+                return triage
+            try:
+                created_target, did_create, related_hint = auto_create_case_for_triage(
+                    session, owner=owner, payload=payload
+                )
+                if related_hint:
+                    payload["related_case_hint"] = related_hint
+                triage.extracted_payload = payload
+                apply_triage_to_case(
+                    session,
+                    item=triage,
+                    actor_user=owner,
+                    target_case=created_target,
+                    file_subfolder="05_财务与发票",
+                    auto_archived=True,
+                    created_case=did_create,
+                    triage_reason=(
+                        f"已根据案号 {inv_case_no} 自动新建案件「{created_target.case_title}」并将发票归档至「05_财务与发票」"
+                        if did_create
+                        else f"电子发票已自动匹配案件「{created_target.case_title}」并归档至「05_财务与发票」"
+                    ),
+                )
+                return triage
+            except CaseGlobalConflictError as exc:
+                payload["triage_decision"] = "needs_confirm"
+                payload["triage_reason"] = (
+                    f"案号 {inv_case_no} 匹配到已归档案件「{exc.case.case_title}」，请人工确认是否重启归档"
+                    if exc.conflict_kind == "archived_accessible" and exc.case is not None
+                    else f"系统内已存在案号 {inv_case_no} 的相关记录，请人工核对归属"
+                )
+                triage.extracted_payload = payload
+                return triage
+
         payload["triage_decision"] = "needs_confirm"
         payload["triage_reason"] = match_res.reason or "未匹配到唯一案件，请人工选择归属案件"
         triage.extracted_payload = payload
         return triage
 
-    # 3. Judicial SMS / Court Docs: require exact case number + covering rule
-    if match_res.confidence != "exact_case_number" or match_res.case is None:
+    # 3. Judicial SMS / Court Docs: require exact case number match OR explicit case_number for auto-create
+    if match_res.confidence == "ambiguous":
+        payload["triage_decision"] = "needs_confirm"
+        payload["triage_reason"] = match_res.reason or "命中多个在办案件，请人工指定归属"
+        triage.extracted_payload = payload
+        return triage
+
+    parsed_case_no = normalize_case_number(payload.get("case_number"))
+    target_case: Optional[Case] = None
+    auto_created_flag = False
+    related_hint: Optional[dict[str, Any]] = None
+
+    if match_res.confidence == "exact_case_number" and match_res.case is not None:
+        target_case = match_res.case
+    elif parsed_case_no:
+        global_hits = find_global_cases_by_number(session, parsed_case_no)
+        if global_hits:
+            payload["triage_decision"] = "needs_confirm"
+            if match_res.case is not None and match_res.case.is_archived:
+                payload["triage_reason"] = (
+                    f"案号 {parsed_case_no} 匹配到已归档案件「{match_res.case.case_title}」，请确认是否重启归档"
+                )
+            else:
+                payload["triage_reason"] = (
+                    f"系统内已存在案号 {parsed_case_no} 的相关案件，请人工核对归属（未自动重复建案）"
+                )
+            triage.extracted_payload = payload
+            return triage
+
+        # Probe category & rule coverage BEFORE creating case so non-covered items don't spawn empty cases
+        try:
+            probe_cat = CaseCategory(str(payload.get("case_category_guess") or "civil"))
+        except ValueError:
+            probe_cat = CaseCategory.CIVIL
+        ev_type_probe = payload.get("event_type_guess")
+        hearing_dt_probe = _parse_hearing_datetime(payload.get("hearing_time"))
+        parsed_docs_probe = payload.get("parsed_docs") or []
+
+        can_auto_cover = False
+        blocked_policy: Optional[AutoTriagePolicy] = None
+        blocked_reason: Optional[str] = None
+
+        if ev_type_probe == "hearing_scheduled" and hearing_dt_probe is not None:
+            blocked_policy = _policy_requires_confirm(policies, "hearing_notice")
+            can_auto_cover = blocked_policy is None
+        elif ev_type_probe == "document_served" and triage.downloaded_files and payload.get("doc_title_hint"):
+            blocked_policy = _policy_requires_confirm(policies, "routine_doc")
+            can_auto_cover = blocked_policy is None
+        elif ev_type_probe:
+            probe_case = Case(
+                case_title="probe",
+                case_category=probe_cat,
+                owner_id=owner.id,
+                client_name="probe",
+                folder_rel_path="probe",
+                crime_type="一般犯罪" if probe_cat == CaseCategory.CRIMINAL else None,
+            )
+            probe_rules = [
+                r
+                for r in session.exec(
+                    select(DeadlineRule)
+                    .where(
+                        DeadlineRule.case_category == probe_cat,
+                        DeadlineRule.trigger_event_type == ev_type_probe,
+                        DeadlineRule.is_enabled == True,  # noqa: E712
+                    )
+                    .order_by(DeadlineRule.id)
+                ).all()
+                if rule_matches_case(r, probe_case)
+            ]
+            if probe_rules:
+                if (
+                    ev_type_probe == "evidence_notice_served"
+                    and not payload.get("authority_specified_days")
+                    and any(
+                        isinstance(d, dict) and (d.get("has_text") is False or d.get("is_scanned"))
+                        for d in parsed_docs_probe
+                    )
+                ):
+                    blocked_reason = "举证通知书为扫描件，未能自动提取法院指定举证天数，请人工核对"
+                else:
+                    pk = (
+                        "judgment_ruling_doc"
+                        if ev_type_probe in _JUDGMENT_RULING_EVENTS
+                        else "procedural_deadline_doc"
+                    )
+                    blocked_policy = _policy_requires_confirm(policies, pk)
+                    can_auto_cover = blocked_policy is None
+
+        if not can_auto_cover:
+            payload["triage_decision"] = "needs_confirm"
+            if blocked_reason:
+                payload["triage_reason"] = blocked_reason
+            elif blocked_policy is not None:
+                payload["triage_reason"] = (
+                    f"识别到新案号 {parsed_case_no}，团队策略已将「{blocked_policy.label}」设为人工二次复核"
+                )
+            else:
+                payload["triage_reason"] = (
+                    f"识别到案号 {parsed_case_no}，但暂无对应自动处理规则，请人工确认建案"
+                )
+            triage.extracted_payload = payload
+            return triage
+
+        try:
+            target_case, auto_created_flag, related_hint = auto_create_case_for_triage(
+                session, owner=owner, payload=payload
+            )
+            if related_hint:
+                payload["related_case_hint"] = related_hint
+        except CaseGlobalConflictError as exc:
+            payload["triage_decision"] = "needs_confirm"
+            payload["triage_reason"] = (
+                f"案号 {parsed_case_no} 匹配到已归档案件「{exc.case.case_title}」，请人工确认是否重启归档"
+                if exc.conflict_kind == "archived_accessible" and exc.case is not None
+                else f"系统内已存在案号 {parsed_case_no} 的相关记录，请人工核对归属"
+            )
+            triage.extracted_payload = payload
+            return triage
+    else:
         payload["triage_decision"] = "needs_confirm"
         payload["triage_reason"] = (
-            match_res.reason
-            if match_res.confidence == "ambiguous"
-            else "未精确匹配到在办案号，请人工选择或新建案件"
+            "未识别到明确案号（如刑拘或口头通知），请人工确认或新建案件"
         )
         triage.extracted_payload = payload
         return triage
 
-    target_case = match_res.case
+    assert target_case is not None
     ev_type = payload.get("event_type_guess")
     hearing_dt = _parse_hearing_datetime(payload.get("hearing_time"))
     parsed_docs = payload.get("parsed_docs") or []
@@ -240,7 +406,12 @@ def evaluate_and_apply_auto_triage(
             hearing_end=hearing_dt + timedelta(minutes=90),
             hearing_location=payload.get("hearing_location"),
             auto_archived=True,
-            triage_reason="已精确匹配案号并识别开庭时间，自动归档文书并写入开庭日程",
+            created_case=auto_created_flag,
+            triage_reason=(
+                f"已自动新建案件「{target_case.case_title}」、归档文书并写入开庭日程"
+                if auto_created_flag
+                else "已精确匹配案号并识别开庭时间，自动归档文书并写入开庭日程"
+            ),
         )
         return triage
 
@@ -266,7 +437,12 @@ def evaluate_and_apply_auto_triage(
             event_date=_parse_event_date(payload.get("event_date")),
             event_notes=f"自动归档：{doc_hint}",
             auto_archived=True,
-            triage_reason=f"常规程序文书「{doc_hint}」已自动归档至「01_司法与程序文书」",
+            created_case=auto_created_flag,
+            triage_reason=(
+                f"已自动新建案件「{target_case.case_title}」并归档「{doc_hint}」至「01_司法与程序文书」"
+                if auto_created_flag
+                else f"常规程序文书「{doc_hint}」已自动归档至「01_司法与程序文书」"
+            ),
         )
         return triage
 
@@ -325,7 +501,12 @@ def evaluate_and_apply_auto_triage(
                 authority_specified_days=payload.get("authority_specified_days"),
                 event_notes=f"自动归档：{doc_hint}",
                 auto_archived=True,
-                triage_reason=f"命中 {len(matching_rules)} 条法定期限规则，已自动归档、推进阶段并生成期限",
+                created_case=auto_created_flag,
+                triage_reason=(
+                    f"已自动新建案件「{target_case.case_title}」，归档文书并生成 {len(matching_rules)} 条法定期限"
+                    if auto_created_flag
+                    else f"命中 {len(matching_rules)} 条法定期限规则，已自动归档、推进阶段并生成期限"
+                ),
             )
             return triage
 
@@ -464,7 +645,8 @@ def _merge_court_pdf_metadata(
     return updated
 
 
-async def enrich_and_fetch_triage_item(
+async def _enrich_with_session(
+    session: Session,
     triage_id: int,
     *,
     phone_last4_override: Optional[str] = None,
@@ -472,129 +654,172 @@ async def enrich_and_fetch_triage_item(
     confirm_sign: bool = False,
     run_fetch: bool = True,
 ) -> None:
-    """Enrich an ``InboxTriageItem``, fetch docs/invoices, and auto-archive if covered by rules."""
-    with Session(engine) as session:
-        triage = session.get(InboxTriageItem, triage_id)
-        if triage is None or triage.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
-            return
-        owner = session.get(User, triage.owner_user_id)
-        sms_row = session.get(SmsInbound, triage.sms_id) if triage.sms_id else None
-        if owner is None:
-            return
+    triage = session.get(InboxTriageItem, triage_id)
+    if triage is None or triage.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
+        return
+    owner = session.get(User, triage.owner_user_id)
+    sms_row = session.get(SmsInbound, triage.sms_id) if triage.sms_id else None
+    if owner is None:
+        return
 
-        payload = dict(triage.extracted_payload or {})
-        sms_content = sms_row.content if sms_row else ""
+    payload = dict(triage.extracted_payload or {})
+    sms_content = sms_row.content if sms_row else ""
 
-        # Optional LLM fallback when regex missed key factual fields
-        if sms_content and not payload.get("llm_assisted"):
-            prev_code = payload.get("extraction_code")
-            payload = await parse_sms_with_optional_llm(
-                sms_content,
-                received_at=sms_row.received_at if sms_row else None,
-            )
-            if prev_code and not payload.get("extraction_code"):
-                payload["extraction_code"] = prev_code
+    # Optional LLM fallback when regex missed key factual fields; merge rather than clobbering existing fields
+    if sms_content and not payload.get("llm_assisted"):
+        reparsed = await parse_sms_with_optional_llm(
+            sms_content,
+            received_at=sms_row.received_at if sms_row else None,
+        )
+        for k, v in reparsed.items():
+            if v is not None and v != "" and not payload.get(k):
+                payload[k] = v
 
-        extra_match_parts: list[str] = [sms_content]
+    extra_match_parts: list[str] = [sms_content]
 
-        if triage.item_type == "invoice_archive" and run_fetch and payload.get("invoice_links"):
-            inv_res = await fetch_and_stage_invoice(payload)
-            if inv_res.status == "fetched" and inv_res.rel_file_path:
-                files = list(triage.downloaded_files or [])
-                if inv_res.rel_file_path not in files:
-                    files.append(inv_res.rel_file_path)
-                triage.downloaded_files = files
-                payload["invoice_meta"] = inv_res.invoice_meta
+    if triage.item_type == "invoice_archive" and run_fetch and payload.get("invoice_links"):
+        inv_res = await fetch_and_stage_invoice(payload)
+        if inv_res.status == "fetched" and inv_res.rel_file_path:
+            files = list(triage.downloaded_files or [])
+            if inv_res.rel_file_path not in files:
+                files.append(inv_res.rel_file_path)
+            triage.downloaded_files = files
+            payload["invoice_meta"] = inv_res.invoice_meta
 
-                existing_doc = session.exec(
-                    select(Document).where(Document.rel_file_path == inv_res.rel_file_path)
-                ).first()
-                if existing_doc is None:
-                    doc = Document(
-                        case_id=None,
-                        folder_category="_待认领发票",
-                        file_name=inv_res.file_name or "电子发票.pdf",
-                        rel_file_path=inv_res.rel_file_path,
-                        doc_subtype="电子发票",
-                        invoice_meta=inv_res.invoice_meta,
-                        uploaded_by=owner.id,  # type: ignore[arg-type]
-                    )
-                    session.add(doc)
-                else:
-                    existing_doc.invoice_meta = inv_res.invoice_meta
-                    session.add(existing_doc)
-
-                for v in (
-                    inv_res.invoice_meta.get("remark"),
-                    inv_res.invoice_meta.get("buyer_name"),
-                ):
-                    if v:
-                        extra_match_parts.append(str(v))
-                triage.status = TriageStatus.PENDING
-                triage.error_or_manual_reason = None
-            elif inv_res.status == "manual_required":
-                triage.status = TriageStatus.MANUAL_FETCH_REQUIRED
-                triage.error_or_manual_reason = inv_res.manual_reason
-
-        elif run_fetch and payload.get("court_links"):
-            phone_tail = (phone_last4_override or owner.phone_last4 or "").strip() or None
-            id_tail = (id_card_last4_override or owner.id_card_last4 or "").strip() or None
-            batch_key = f"triage_{triage.id}"
-            eff_fetch_mode = owner.court_auto_fetch_mode or get_settings().court_auto_fetch_mode
-            court_res = await fetch_court_documents(
-                payload,
-                batch_key=batch_key,
-                phone_last4=phone_tail,
-                id_card_last4=id_tail,
-                confirm_sign=confirm_sign,
-                auto_fetch_mode=eff_fetch_mode,
-                sms_text=sms_content,
-            )
-            payload["fetch_tier"] = court_res.tier_used
-            payload["requires_phone_last4"] = court_res.requires_phone_last4
-            if phone_tail:
-                payload["phone_last4_used"] = phone_tail
-
-            if court_res.status == "fetched":
-                existing_files = list(triage.downloaded_files or [])
-                for rel in court_res.downloaded_files:
-                    if rel not in existing_files:
-                        existing_files.append(rel)
-                triage.downloaded_files = existing_files
-                payload = _merge_court_pdf_metadata(
-                    payload,
-                    court_res.parsed_docs,
-                    court_res.court_name,
-                    court_res.sent_at,
+            existing_doc = session.exec(
+                select(Document).where(Document.rel_file_path == inv_res.rel_file_path)
+            ).first()
+            if existing_doc is None:
+                doc = Document(
+                    case_id=None,
+                    folder_category="_待认领发票",
+                    file_name=inv_res.file_name or "电子发票.pdf",
+                    rel_file_path=inv_res.rel_file_path,
+                    doc_subtype="电子发票",
+                    invoice_meta=inv_res.invoice_meta,
+                    uploaded_by=owner.id,  # type: ignore[arg-type]
                 )
-                triage.status = TriageStatus.PENDING
-                triage.error_or_manual_reason = None
-            elif court_res.status == "manual_required":
-                triage.status = TriageStatus.MANUAL_FETCH_REQUIRED
-                triage.error_or_manual_reason = court_res.manual_reason
+                session.add(doc)
+            else:
+                existing_doc.invoice_meta = inv_res.invoice_meta
+                session.add(existing_doc)
 
-        match_res = match_case_with_confidence(
-            session, owner, payload, extra_text=" ".join(p for p in extra_match_parts if p)
+            for v in (
+                inv_res.invoice_meta.get("remark"),
+                inv_res.invoice_meta.get("buyer_name"),
+            ):
+                if v:
+                    extra_match_parts.append(str(v))
+            triage.status = TriageStatus.PENDING
+            triage.error_or_manual_reason = None
+        elif inv_res.status == "manual_required":
+            triage.status = TriageStatus.MANUAL_FETCH_REQUIRED
+            triage.error_or_manual_reason = inv_res.manual_reason
+
+    elif run_fetch and payload.get("court_links"):
+        phone_tail = (phone_last4_override or owner.phone_last4 or "").strip() or None
+        id_tail = (id_card_last4_override or owner.id_card_last4 or "").strip() or None
+        batch_key = f"triage_{triage.id}"
+        eff_fetch_mode = owner.court_auto_fetch_mode or get_settings().court_auto_fetch_mode
+        court_res = await fetch_court_documents(
+            payload,
+            batch_key=batch_key,
+            phone_last4=phone_tail,
+            id_card_last4=id_tail,
+            confirm_sign=confirm_sign,
+            auto_fetch_mode=eff_fetch_mode,
+            sms_text=sms_content,
         )
-        if match_res.case is not None:
-            triage.matched_case_id = match_res.case.id
+        payload["fetch_tier"] = court_res.tier_used
+        payload["requires_phone_last4"] = court_res.requires_phone_last4
+        if phone_tail:
+            payload["phone_last4_used"] = phone_tail
 
-        triage.extracted_payload = payload
-        evaluate_and_apply_auto_triage(
+        if court_res.status == "fetched":
+            existing_files = list(triage.downloaded_files or [])
+            for rel in court_res.downloaded_files:
+                if rel not in existing_files:
+                    existing_files.append(rel)
+            triage.downloaded_files = existing_files
+            payload = _merge_court_pdf_metadata(
+                payload,
+                court_res.parsed_docs,
+                court_res.court_name,
+                court_res.sent_at,
+            )
+            triage.status = TriageStatus.PENDING
+            triage.error_or_manual_reason = None
+        elif court_res.status == "manual_required":
+            triage.status = TriageStatus.MANUAL_FETCH_REQUIRED
+            triage.error_or_manual_reason = court_res.manual_reason
+
+    match_res = match_case_with_confidence(
+        session, owner, payload, extra_text=" ".join(p for p in extra_match_parts if p)
+    )
+    if match_res.case is not None:
+        triage.matched_case_id = match_res.case.id
+
+    triage.extracted_payload = payload
+    evaluate_and_apply_auto_triage(
+        session,
+        owner=owner,
+        triage=triage,
+        match_res=match_res,
+    )
+    session.add(triage)
+    session.commit()
+    session.refresh(triage)
+
+    if triage.status == TriageStatus.MANUAL_FETCH_REQUIRED:
+        from app.services.reminder_scheduler import push_manual_fetch_alert
+
+        push_manual_fetch_alert(session, triage)
+    elif triage.status == TriageStatus.PENDING:
+        from app.services.reminder_scheduler import push_pending_confirm_alert
+
+        push_pending_confirm_alert(session, triage)
+
+
+async def enrich_and_fetch_triage_item(
+    triage_id: int,
+    *,
+    phone_last4_override: Optional[str] = None,
+    id_card_last4_override: Optional[str] = None,
+    confirm_sign: bool = False,
+    run_fetch: bool = True,
+    session: Optional[Session] = None,
+) -> None:
+    """Enrich an ``InboxTriageItem``, fetch docs/invoices, and auto-archive if covered by rules."""
+    if session is not None:
+        await _enrich_with_session(
             session,
-            owner=owner,
-            triage=triage,
-            match_res=match_res,
+            triage_id,
+            phone_last4_override=phone_last4_override,
+            id_card_last4_override=id_card_last4_override,
+            confirm_sign=confirm_sign,
+            run_fetch=run_fetch,
         )
-        session.add(triage)
-        session.commit()
-        session.refresh(triage)
+        return
 
-        if triage.status == TriageStatus.MANUAL_FETCH_REQUIRED:
-            from app.services.reminder_scheduler import push_manual_fetch_alert
-
-            push_manual_fetch_alert(session, triage)
-        elif triage.status == TriageStatus.PENDING:
-            from app.services.reminder_scheduler import push_pending_confirm_alert
-
-            push_pending_confirm_alert(session, triage)
+    with Session(engine) as bg_session:
+        try:
+            await _enrich_with_session(
+                bg_session,
+                triage_id,
+                phone_last4_override=phone_last4_override,
+                id_card_last4_override=id_card_last4_override,
+                confirm_sign=confirm_sign,
+                run_fetch=run_fetch,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled error in enrich_and_fetch_triage_item(%s)", triage_id)
+            bg_session.rollback()
+            triage = bg_session.get(InboxTriageItem, triage_id)
+            if triage is not None and triage.status not in (
+                TriageStatus.CONFIRMED,
+                TriageStatus.IGNORED,
+            ):
+                triage.status = TriageStatus.MANUAL_FETCH_REQUIRED
+                triage.error_or_manual_reason = f"自动抓取或解析异常：{str(exc)[:180]}"
+                bg_session.add(triage)
+                bg_session.commit()

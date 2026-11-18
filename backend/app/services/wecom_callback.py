@@ -12,11 +12,17 @@ import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.security import check_case_access, check_triage_access
 from app.models.entities import Case, InboxTriageItem, TriageStatus, User
-from app.services.triage_archiver import apply_triage_to_case, mark_triage_ignored
+from app.services.triage_archiver import (
+    CaseGlobalConflictError,
+    apply_triage_to_case,
+    auto_create_case_for_triage,
+    build_confirm_kwargs_from_triage,
+    mark_triage_ignored,
+)
 
 
 def compute_wecom_signature(
@@ -119,6 +125,15 @@ def execute_triage_quick_action(
     source: str = "wecom_callback",
 ) -> dict[str, Any]:
     """Atomically execute confirm/ignore on a triage item and persist AuditLog."""
+    if item.id is not None:
+        locked = session.exec(
+            select(InboxTriageItem)
+            .where(InboxTriageItem.id == item.id)
+            .with_for_update()
+        ).first()
+        if locked is not None:
+            item = locked
+
     check_triage_access(session, actor_user, item)
     if item.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
         return {
@@ -146,23 +161,47 @@ def execute_triage_quick_action(
 
     if normalized_action == "confirm":
         resolved_case_id = case_id or item.matched_case_id
-        if not resolved_case_id:
-            return {
-                "ok": False,
-                "already_handled": False,
-                "status": item.status.value,
-                "triage_id": item.id,
-                "case_id": None,
-                "message": "该事项尚未匹配到推荐案件，请打开工作台收件箱手动选择案件归档。",
-            }
-        target_case = check_case_access(session.get(Case, resolved_case_id), actor_user, session)
+        created_case = False
+        if resolved_case_id:
+            target_case = check_case_access(session.get(Case, resolved_case_id), actor_user, session)
+        else:
+            payload = dict(item.extracted_payload or {})
+            if not payload.get("case_number"):
+                return {
+                    "ok": False,
+                    "already_handled": False,
+                    "status": item.status.value,
+                    "triage_id": item.id,
+                    "case_id": None,
+                    "message": "该事项尚未匹配到推荐案件且缺少明确案号，请打开工作台收件箱手动选择案件归档。",
+                }
+            try:
+                target_case, created_case, related_hint = auto_create_case_for_triage(
+                    session, owner=actor_user, payload=payload
+                )
+                if related_hint:
+                    payload["related_case_hint"] = related_hint
+                    item.extracted_payload = payload
+            except CaseGlobalConflictError:
+                return {
+                    "ok": False,
+                    "already_handled": False,
+                    "status": item.status.value,
+                    "triage_id": item.id,
+                    "case_id": None,
+                    "message": "系统内已存在该案号的相关案件，请打开工作台收件箱人工核对归属。",
+                }
+
+        confirm_kwargs = build_confirm_kwargs_from_triage(item, target_case)
         res = apply_triage_to_case(
             session,
             item=item,
             actor_user=actor_user,
             target_case=target_case,
             auto_archived=False,
+            created_case=created_case,
             triage_reason=f"通过微信快捷交互确认归入「{target_case.case_title}」",
+            **confirm_kwargs,
         )
         session.commit()
         session.refresh(item)
@@ -173,6 +212,10 @@ def execute_triage_quick_action(
             "triage_id": item.id,
             "case_id": res.case_id,
             "case_title": target_case.case_title,
+            "created_case": created_case,
+            "generated_deadline_count": res.generated_deadline_count,
+            "created_event_id": res.created_event_id,
+            "created_schedule_id": res.created_schedule_id,
             "message": f"已确认归档至案件「{target_case.case_title}」（写入文档 {len(res.archived_documents)} 份，生成期限 {res.generated_deadline_count} 条）。",
         }
 

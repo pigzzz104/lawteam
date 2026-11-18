@@ -281,6 +281,23 @@ def list_case_files(folder_rel_path: str) -> dict[str, list[dict[str, Any]]]:
     return listing
 
 
+def remove_empty_case_directory(folder_rel_path: str) -> bool:
+    """Safely remove an auto-created case directory tree ONLY if it contains no regular files."""
+    if not folder_rel_path:
+        return False
+    try:
+        case_dir = resolve_safe_path(folder_rel_path, must_exist=True)
+    except (PathSecurityError, FileNotFoundError):
+        return False
+    if not case_dir.is_dir():
+        return False
+    for p in case_dir.rglob("*"):
+        if p.is_file() or p.is_symlink():
+            return False
+    shutil.rmtree(case_dir, ignore_errors=True)
+    return True
+
+
 def format_court_doc_filename(
     *,
     received_date: str,

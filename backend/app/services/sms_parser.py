@@ -296,24 +296,25 @@ def _extract_event_date_iso(content: str, fallback_dt: Optional[datetime] = None
 
 
 def _extract_doc_title_hint(content: str) -> Optional[str]:
-    # e.g. 送达文书（上诉缴费单） or 送达调查令
+    # e.g. 送达文书（上诉缴费单） or 送达调查令 (specific document names before generic 送达...)
     m_paren = re.search(r"送达文书[（(]([^）)]+)[）)]", content)
     if m_paren:
         return m_paren.group(1).strip()
-    m_sub = re.search(r"送达([\u4e00-\u9fa5]{2,14})", content)
-    if m_sub:
-        return m_sub.group(1).strip()
     for title_kw in (
         "民事判决书",
         "刑事判决书",
         "行政判决书",
         "执行异议裁定书",
         "执行裁定书",
+        "民事裁定书",
+        "刑事裁定书",
+        "行政裁定书",
         "裁定书",
         "仲裁裁决书",
         "行政复议决定书",
         "执行通知书",
         "报告财产令",
+        "限期履行通知书",
         "举证通知书",
         "应诉通知书",
         "起诉状副本",
@@ -328,6 +329,11 @@ def _extract_doc_title_hint(content: str) -> Optional[str]:
     ):
         if title_kw in content:
             return title_kw
+    m_sub = re.search(r"送达([\u4e00-\u9fa5]{2,14})", content)
+    if m_sub:
+        sub_val = m_sub.group(1).strip()
+        if sub_val != "文书":
+            return sub_val
     if "送达文书" in content:
         return "送达文书"
     return None
@@ -343,6 +349,17 @@ def _extract_client_hint(content: str) -> Optional[str]:
 
 def _classify_sms_category(content: str, patterns: dict[str, Any]) -> str:
     rules: dict[str, list[str]] = patterns.get("sms_category_rules", {})
+    # Judicial portals (court/12309/arbitration links) take precedence over incidental invoice mentions
+    for link_rule in patterns.get("download_link_patterns", []):
+        pat = link_rule.get("pattern")
+        if pat and re.search(pat, content):
+            domain = str(link_rule.get("canonical_domain") or "")
+            if domain == "12309.gov.cn":
+                return "procuratorate_12309"
+            if domain == "arbitration_portal":
+                return "arbitration"
+            return "court_service"
+
     priority = ("invoice", "procuratorate_12309", "detention_police", "arbitration", "court_service")
     for category in priority:
         for kw in rules.get(category, []):

@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
-from app.core.security import record_audit_log
+from app.core.security import get_accessible_case_ids_filter, record_audit_log
+from app.core.seed import resolve_default_subtype_and_stage
 from app.models.entities import (
+    AuditLog,
     Case,
+    CaseCategory,
     CaseEvent,
+    CaseMember,
+    CaseMemberRole,
+    CaseVisibility,
     Deadline,
     Document,
     InboxTriageItem,
@@ -25,9 +32,22 @@ from app.models.entities import (
 )
 from app.services import file_bridge
 from app.services.deadline_engine import derive_deadlines_for_event
-from app.services.sms_parser import suggest_stage_for_event
+from app.services.sms_parser import (
+    _case_number_match_keys,
+    normalize_case_number,
+    suggest_stage_for_event,
+)
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+
+class CaseGlobalConflictError(Exception):
+    """Raised when global case-number dedup finds an archived or inaccessible existing case."""
+
+    def __init__(self, conflict_kind: str, case: Optional[Case] = None) -> None:
+        self.conflict_kind = conflict_kind
+        self.case = case
+        super().__init__(conflict_kind)
 
 
 @dataclass
@@ -42,6 +62,209 @@ class TriageApplyResult:
 def _to_utc(dt: datetime) -> datetime:
     localized = dt.replace(tzinfo=SHANGHAI_TZ) if dt.tzinfo is None else dt
     return localized.astimezone(timezone.utc)
+
+
+def _parse_optional_date(raw: Any) -> Optional[date]:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str) and len(raw.strip()) >= 10:
+        try:
+            return date.fromisoformat(raw.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_optional_datetime(raw: Any) -> Optional[datetime]:
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+            return dt.replace(tzinfo=SHANGHAI_TZ) if dt.tzinfo is None else dt
+        except ValueError:
+            return None
+    return None
+
+
+def find_global_cases_by_number(session: Session, case_number: str) -> list[Case]:
+    """Search ALL cases globally (including archived/other users) by normalized case_number keys."""
+    target_keys = _case_number_match_keys(case_number)
+    if not target_keys:
+        return []
+    all_with_no = session.exec(select(Case).where(Case.case_number != None)).all()  # noqa: E711
+    return [
+        c for c in all_with_no if c.case_number and bool(_case_number_match_keys(c.case_number) & target_keys)
+    ]
+
+
+def auto_create_case_for_triage(
+    session: Session,
+    *,
+    owner: User,
+    payload: dict[str, Any],
+) -> tuple[Case, bool, Optional[dict[str, Any]]]:
+    """
+    Create (or safely reuse under advisory lock) a Case from extracted SMS/PDF payload.
+
+    Returns ``(case, created_case, related_case_hint)``.
+    """
+    assert owner.id is not None
+    case_number = normalize_case_number(payload.get("case_number"))
+    if not case_number:
+        raise ValueError("Cannot auto-create case without a clear case_number")
+
+    try:
+        bind = session.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:cn))"),
+                {"cn": case_number},
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    accessible_ids = get_accessible_case_ids_filter(owner, session)
+    global_matches = find_global_cases_by_number(session, case_number)
+    if global_matches:
+        accessible_active = [
+            c for c in global_matches if c.id in accessible_ids and not c.is_archived
+        ]
+        if accessible_active:
+            return accessible_active[0], False, None
+        accessible_archived = [
+            c for c in global_matches if c.id in accessible_ids and c.is_archived
+        ]
+        if accessible_archived:
+            raise CaseGlobalConflictError("archived_accessible", accessible_archived[0])
+        raise CaseGlobalConflictError("inaccessible_existing", None)
+
+    raw_cat = str(payload.get("case_category_guess") or "civil").strip()
+    try:
+        case_cat = CaseCategory(raw_cat)
+    except ValueError:
+        case_cat = CaseCategory.CIVIL
+
+    subtype, stage = resolve_default_subtype_and_stage(case_cat)
+    inv_meta = payload.get("invoice_meta") if isinstance(payload.get("invoice_meta"), dict) else {}
+    client_raw = str(
+        payload.get("client_name_guess")
+        or payload.get("client_hint")
+        or inv_meta.get("buyer_name")
+        or ""
+    ).strip()
+    client_name = client_raw if len(client_raw) >= 2 else "待补充委托人"
+    agency = str(payload.get("agency") or "").strip() or None
+    case_title = (
+        f"{case_number} {client_name}"
+        if client_name != "待补充委托人"
+        else f"{case_number} 待补充案件"
+    )
+
+    related_hint: Optional[dict[str, Any]] = None
+    if client_name != "待补充委托人" and accessible_ids:
+        related_cases = session.exec(
+            select(Case).where(
+                Case.id.in_(accessible_ids),  # type: ignore[union-attr]
+                Case.is_archived == False,  # noqa: E712
+                Case.client_name == client_name,
+            )
+        ).all()
+        if related_cases:
+            rc = related_cases[0]
+            related_hint = {
+                "case_id": rc.id,
+                "case_title": rc.case_title,
+                "case_number": rc.case_number,
+                "procedure_subtype": rc.procedure_subtype,
+            }
+
+    now = utcnow()
+    folder_rel_path = file_bridge.build_case_folder_rel_path(
+        case_number=case_number,
+        client_name=client_name,
+        case_title=case_title,
+    )
+    new_case = Case(
+        case_title=case_title,
+        case_number=case_number,
+        case_category=case_cat,
+        procedure_subtype=subtype,
+        current_stage=stage,
+        stage_entered_at=now,
+        visibility=CaseVisibility.TEAM,
+        owner_id=owner.id,
+        client_name=client_name,
+        handling_agency=agency,
+        crime_type="一般犯罪" if case_cat == CaseCategory.CRIMINAL else None,
+        folder_rel_path=folder_rel_path,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(new_case)
+    session.flush()
+    assert new_case.id is not None
+
+    session.add(
+        CaseMember(
+            case_id=new_case.id,
+            user_id=owner.id,
+            role_in_case=CaseMemberRole.LEAD,
+        )
+    )
+    record_audit_log(
+        session,
+        actor_user_id=owner.id,
+        action="case.auto_create",
+        entity_type="case",
+        entity_id=new_case.id,
+        case_id=new_case.id,
+        detail={
+            "case_title": new_case.case_title,
+            "case_number": new_case.case_number,
+            "case_category": new_case.case_category.value,
+        },
+    )
+    file_bridge.ensure_case_directories(folder_rel_path)
+    return new_case, True, related_hint
+
+
+def build_confirm_kwargs_from_triage(
+    item: InboxTriageItem, target_case: Case
+) -> dict[str, Any]:
+    """Build complete Event/Deadline/Schedule/Subfolder kwargs from extracted triage payload."""
+    payload = item.extracted_payload or {}
+    if item.item_type == "invoice_archive":
+        return {"file_subfolder": "05_财务与发票"}
+
+    hearing_dt = _parse_optional_datetime(payload.get("hearing_time"))
+    ev_type = str(payload.get("event_type_guess") or "").strip() or None
+    if ev_type is None and hearing_dt is not None:
+        ev_type = "hearing_scheduled"
+
+    ev_date = _parse_optional_date(payload.get("event_date"))
+    if ev_date is None:
+        ev_date = hearing_dt.date() if hearing_dt is not None else datetime.now(SHANGHAI_TZ).date()
+
+    auth_days_raw = payload.get("authority_specified_days")
+    auth_days = int(auth_days_raw) if isinstance(auth_days_raw, int) and auth_days_raw > 0 else None
+    doc_hint = str(payload.get("doc_title_hint") or "").strip() or None
+
+    kwargs: dict[str, Any] = {
+        "file_subfolder": "01_司法与程序文书",
+        "event_type": ev_type,
+        "event_date": ev_date if ev_type else None,
+        "authority_specified_days": auth_days,
+        "event_notes": f"自动识别入案：{doc_hint}" if doc_hint else "收件箱快捷确认入案",
+        "new_stage": str(payload.get("suggested_stage") or "").strip() or None,
+    }
+    if hearing_dt is not None:
+        kwargs["hearing_category"] = "hearing"
+        kwargs["hearing_title"] = f"{target_case.case_number or target_case.case_title} 开庭审理"
+        kwargs["hearing_start"] = hearing_dt
+        kwargs["hearing_end"] = hearing_dt + timedelta(minutes=90)
+        kwargs["hearing_location"] = payload.get("hearing_location")
+    return kwargs
 
 
 def apply_triage_to_case(
@@ -79,6 +302,14 @@ def apply_triage_to_case(
     target_subfolder = file_subfolder or default_subfolder
     if target_subfolder not in file_bridge.STANDARD_CASE_SUBFOLDERS:
         raise ValueError(f"Invalid file_subfolder: {target_subfolder}")
+
+    st_utc: Optional[datetime] = None
+    en_utc: Optional[datetime] = None
+    if hearing_start is not None and hearing_end is not None:
+        st_utc = _to_utc(hearing_start)
+        en_utc = _to_utc(hearing_end)
+        if en_utc <= st_utc:
+            raise ValueError("hearing_end must be after hearing_start")
 
     archived_paths: list[str] = []
     extracted = dict(item.extracted_payload or {})
@@ -134,11 +365,7 @@ def apply_triage_to_case(
         deadline_count = len(deadlines)
 
     created_schedule_id: Optional[int] = None
-    if hearing_start is not None and hearing_end is not None:
-        st_utc = _to_utc(hearing_start)
-        en_utc = _to_utc(hearing_end)
-        if en_utc <= st_utc:
-            raise ValueError("hearing_end must be after hearing_start")
+    if st_utc is not None and en_utc is not None:
         sched = ScheduleItem(
             case_id=target_case.id,
             owner_id=actor_user.id,
@@ -153,6 +380,7 @@ def apply_triage_to_case(
         session.flush()
         created_schedule_id = sched.id
 
+    previous_stage = target_case.current_stage
     resolved_stage = new_stage.strip() if new_stage and new_stage.strip() else None
     if not resolved_stage and auto_advance_stage and clean_event_type:
         resolved_stage = suggest_stage_for_event(
@@ -162,11 +390,15 @@ def apply_triage_to_case(
             current_stage=target_case.current_stage,
         )
     if resolved_stage and resolved_stage != target_case.current_stage:
+        extracted["previous_case_stage"] = previous_stage
         target_case.current_stage = resolved_stage
         target_case.stage_entered_at = now
     target_case.updated_at = now
     session.add(target_case)
 
+    if created_case:
+        extracted["auto_created_case_id"] = target_case.id
+        extracted["auto_created_case"] = True
     extracted["auto_archived"] = auto_archived
     extracted["archived_subfolder"] = target_subfolder
     if created_event_id is not None:
@@ -278,6 +510,9 @@ def reopen_triage_item(
             if ev is not None:
                 session.delete(ev)
 
+    prev_stage = extracted.pop("previous_case_stage", None)
+    auto_case_id = extracted.pop("auto_created_case_id", None)
+    extracted.pop("auto_created_case", None)
     extracted.pop("archived_subfolder", None)
     extracted["action_epoch"] = int(extracted.get("action_epoch") or 0) + 1
     extracted["auto_archived"] = False
@@ -292,6 +527,39 @@ def reopen_triage_item(
     if restored_files:
         item.downloaded_files = restored_files
     session.add(item)
+    session.flush()
+
+    deleted_empty_auto_case = False
+    if prev_case_id is not None:
+        prev_case = session.get(Case, prev_case_id)
+        if prev_case is not None:
+            if isinstance(prev_stage, str) and prev_stage.strip():
+                prev_case.current_stage = prev_stage.strip()
+                session.add(prev_case)
+            if auto_case_id == prev_case_id:
+                has_ev = session.exec(select(CaseEvent.id).where(CaseEvent.case_id == prev_case_id)).first() is not None
+                has_dl = session.exec(select(Deadline.id).where(Deadline.case_id == prev_case_id)).first() is not None
+                has_sc = session.exec(select(ScheduleItem.id).where(ScheduleItem.case_id == prev_case_id)).first() is not None
+                has_doc = session.exec(select(Document.id).where(Document.case_id == prev_case_id)).first() is not None
+                has_other_triage = session.exec(
+                    select(InboxTriageItem.id).where(
+                        InboxTriageItem.matched_case_id == prev_case_id,
+                        InboxTriageItem.id != item.id,
+                    )
+                ).first() is not None
+                if not (has_ev or has_dl or has_sc or has_doc or has_other_triage):
+                    item.matched_case_id = None
+                    session.add(item)
+                    for m in session.exec(select(CaseMember).where(CaseMember.case_id == prev_case_id)).all():
+                        session.delete(m)
+                    for log in session.exec(select(AuditLog).where(AuditLog.case_id == prev_case_id)).all():
+                        log.case_id = None
+                        session.add(log)
+                    folder_rel = prev_case.folder_rel_path
+                    session.delete(prev_case)
+                    session.flush()
+                    file_bridge.remove_empty_case_directory(folder_rel)
+                    deleted_empty_auto_case = True
 
     record_audit_log(
         session,
@@ -299,8 +567,11 @@ def reopen_triage_item(
         action="inbox.reopen",
         entity_type="inbox_triage_item",
         entity_id=item.id,
-        case_id=prev_case_id,
-        detail={"restored_files": restored_files},
+        case_id=None if deleted_empty_auto_case else prev_case_id,
+        detail={
+            "restored_files": restored_files,
+            "deleted_empty_auto_case": deleted_empty_auto_case,
+        },
     )
     return item
 

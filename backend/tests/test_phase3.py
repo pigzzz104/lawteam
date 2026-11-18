@@ -376,6 +376,10 @@ def test_multi_platform_sms_webhooks_hmac_and_dedup(
 def test_court_3tier_phone_last4_retry_and_atomic_confirm_pipeline(
     client: TestClient, isolated_cases_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("AUTO_ARCHIVE_ENABLED", "false")
+    get_settings.cache_clear()
     headers = _login(client, "lead_lawyer")
     sample_pdf = _make_minimal_pdf("Court Judgment")
 
@@ -504,6 +508,7 @@ def test_court_3tier_phone_last4_retry_and_atomic_confirm_pipeline(
             ).all()
             assert len(audits) == 1
     finally:
+        get_settings.cache_clear()
         _cleanup_records(
             case_ids=created_case_ids,
             triage_ids=created_triage_ids,
@@ -669,6 +674,7 @@ def test_invoice_auto_archive_reopen_and_unmatched_staging(
         assert unmatched["matched_case_id"] is None
         assert unmatched["downloaded_files"][0].startswith("_待认领发票/")
     finally:
+        get_settings.cache_clear()
         _cleanup_records(
             case_ids=created_case_ids,
             triage_ids=created_triage_ids,
@@ -827,6 +833,7 @@ def test_auto_archive_court_doc_noise_and_ambiguous_fallback(
         assert batch_resp.status_code == 200
         assert batch_resp.json()["ignored_count"] == 1
     finally:
+        get_settings.cache_clear()
         _cleanup_records(
             case_ids=created_case_ids,
             triage_ids=created_triage_ids,
