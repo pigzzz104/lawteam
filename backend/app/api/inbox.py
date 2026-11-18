@@ -619,8 +619,18 @@ def reopen_triage_endpoint(
 ) -> InboxTriageRead:
     """Undo an auto-archived or confirmed item back to PENDING so it can be re-assigned."""
     item = _get_accessible_triage_or_404(session, current_user, triage_id)
+    if item.status == TriageStatus.IGNORED:
+        extracted = dict(item.extracted_payload or {})
+        extracted["action_epoch"] = int(extracted.get("action_epoch") or 0) + 1
+        item.extracted_payload = extracted
+        item.status = TriageStatus.PENDING
+        item.error_or_manual_reason = None
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        return _serialize_triage_items(session, [item])[0]
     if item.status != TriageStatus.CONFIRMED:
-        raise HTTPException(status_code=409, detail="Only confirmed or auto-archived items can be reopened")
+        raise HTTPException(status_code=409, detail="Only confirmed, auto-archived, or ignored items can be reopened")
     if item.matched_case_id is not None:
         check_case_access(
             session.get(Case, item.matched_case_id),

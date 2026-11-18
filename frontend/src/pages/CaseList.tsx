@@ -15,8 +15,18 @@ import {
 import { casesApi, rulesApi, usersApi } from "@/api/client";
 import { ModalDialog } from "@/components/ModalDialog";
 import { CategoryBadge, CustodyBadge } from "@/components/StatusBadges";
+import {
+  MdCheckbox,
+  MdRadioGroup,
+  MdSelect,
+} from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
-import { CASE_CATEGORY_META, CASE_MEMBER_ROLE_LABELS } from "@/lib/domain";
+import {
+  CASE_CATEGORY_META,
+  CASE_MEMBER_ROLE_LABELS,
+  CRIME_TYPE_OPTIONS,
+  CUSTODY_STATUS_OPTIONS,
+} from "@/lib/domain";
 import type { CaseCategory, CaseMemberRole, CaseVisibility } from "@/types/api";
 
 export function CaseList() {
@@ -43,7 +53,9 @@ export function CaseList() {
   const [isForeignRelated, setIsForeignRelated] = useState(false);
   const [custodyStatus, setCustodyStatus] = useState("");
   const [custodyPlace, setCustodyPlace] = useState("");
-  const [crimeType, setCrimeType] = useState("");
+  const [crimeType, setCrimeType] = useState("一般犯罪");
+  const [chargeName, setChargeName] = useState("");
+  const [createMoreOpen, setCreateMoreOpen] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<
     Array<{ user_id: number; role_in_case: CaseMemberRole }>
   >([]);
@@ -90,7 +102,9 @@ export function CaseList() {
     setIsForeignRelated(false);
     setCustodyStatus("");
     setCustodyPlace("");
-    setCrimeType("");
+    setCrimeType("一般犯罪");
+    setChargeName("");
+    setCreateMoreOpen(false);
     setSelectedMembers([]);
     setCreateOpen(true);
   };
@@ -111,7 +125,8 @@ export function CaseList() {
         is_foreign_related: isForeignRelated,
         custody_status: caseCategory === "criminal" ? custodyStatus.trim() || null : null,
         custody_place: caseCategory === "criminal" ? custodyPlace.trim() || null : null,
-        crime_type: caseCategory === "criminal" ? crimeType.trim() || null : null,
+        crime_type: caseCategory === "criminal" ? crimeType || "一般犯罪" : null,
+        charge_name: caseCategory === "criminal" ? chargeName.trim() || null : null,
         members: selectedMembers,
       }),
     onSuccess: (created) => {
@@ -171,22 +186,16 @@ export function CaseList() {
             />
           </div>
 
-          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={staleOnly}
-              onChange={(e) => setStaleOnly(e.target.checked)}
-            />
-            <span>仅看阶段停滞预警</span>
-          </label>
-          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-            />
-            <span>包含已归档案件</span>
-          </label>
+          <MdCheckbox
+            checked={staleOnly}
+            onChange={setStaleOnly}
+            label={<span className="text-xs font-medium">仅看阶段停滞预警</span>}
+          />
+          <MdCheckbox
+            checked={showArchived}
+            onChange={setShowArchived}
+            label={<span className="text-xs font-medium">包含已归档案件</span>}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -372,10 +381,10 @@ export function CaseList() {
             </div>
 
             <div>
-              <label htmlFor="nc-category" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="nc-category" className="block text-xs font-semibold mb-1">
                 案件大类 *
               </label>
-              <select
+              <MdSelect
                 id="nc-category"
                 value={caseCategory}
                 onChange={(e) => {
@@ -383,18 +392,17 @@ export function CaseList() {
                   setSubtype("");
                   setStage("");
                 }}
-                className="lt-input"
               >
                 {(Object.keys(CASE_CATEGORY_META) as CaseCategory[]).map((cat) => (
                   <option key={cat} value={cat}>
                     {CASE_CATEGORY_META[cat].label}
                   </option>
                 ))}
-              </select>
+              </MdSelect>
             </div>
 
             <div>
-              <label htmlFor="nc-number" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="nc-number" className="block text-xs font-semibold mb-1">
                 案号（用于自动匹配短信）
               </label>
               <input
@@ -408,25 +416,24 @@ export function CaseList() {
             </div>
 
             <div>
-              <label htmlFor="nc-subtype" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="nc-subtype" className="block text-xs font-semibold mb-1">
                 程序子类型
               </label>
               {subtypeOptions.length > 0 ? (
-                <select
+                <MdSelect
                   id="nc-subtype"
                   value={resolvedSubtype}
                   onChange={(e) => {
                     setSubtype(e.target.value);
                     setStage("");
                   }}
-                  className="lt-input"
                 >
                   {subtypeOptions.map((st) => (
                     <option key={st} value={st}>
                       {st}
                     </option>
                   ))}
-                </select>
+                </MdSelect>
               ) : (
                 <input
                   id="nc-subtype"
@@ -439,22 +446,21 @@ export function CaseList() {
             </div>
 
             <div>
-              <label htmlFor="nc-stage" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="nc-stage" className="block text-xs font-semibold mb-1">
                 初始所处阶段
               </label>
               {stageOptions.length > 0 ? (
-                <select
+                <MdSelect
                   id="nc-stage"
                   value={stage || stageOptions[0] || ""}
                   onChange={(e) => setStage(e.target.value)}
-                  className="lt-input"
                 >
                   {stageOptions.map((sg) => (
                     <option key={sg} value={sg}>
                       {sg}
                     </option>
                   ))}
-                </select>
+                </MdSelect>
               ) : (
                 <input
                   id="nc-stage"
@@ -467,7 +473,7 @@ export function CaseList() {
             </div>
 
             <div>
-              <label htmlFor="nc-client" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="nc-client" className="block text-xs font-semibold mb-1">
                 委托人 / 当事人姓名 *
               </label>
               <input
@@ -481,21 +487,8 @@ export function CaseList() {
             </div>
 
             <div>
-              <label htmlFor="nc-opponent" className="block text-xs font-semibold text-slate-700 mb-1">
-                对方当事人 / 被害方
-              </label>
-              <input
-                id="nc-opponent"
-                type="text"
-                value={opponentName}
-                onChange={(e) => setOpponentName(e.target.value)}
-                className="lt-input"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="nc-agency" className="block text-xs font-semibold text-slate-700 mb-1">
-                承办法院 / 检察院 / 公安 / 仲裁委
+              <label htmlFor="nc-agency" className="block text-xs font-semibold mb-1">
+                承办法院 / 检察院 / 仲裁委
               </label>
               <input
                 id="nc-agency"
@@ -506,72 +499,73 @@ export function CaseList() {
                 className="lt-input"
               />
             </div>
-
-            <div>
-              <label htmlFor="nc-client-id" className="block text-xs font-semibold text-slate-700 mb-1">
-                当事人证件后4位（用于法院送达身份校验）
-              </label>
-              <input
-                id="nc-client-id"
-                type="text"
-                maxLength={4}
-                value={clientIdLast4}
-                onChange={(e) => setClientIdLast4(e.target.value)}
-                placeholder="如 102X"
-                className="lt-input"
-              />
-            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-6 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs">
-            <div className="flex items-center gap-3">
-              <span className="font-semibold text-slate-700">可见性：</span>
-              <label className="inline-flex items-center gap-1 cursor-pointer">
-                <input
-                  type="radio"
-                  name="nc-visibility"
-                  checked={visibility === "team"}
-                  onChange={() => setVisibility("team")}
-                />
-                <span>团队协同</span>
-              </label>
-              <label className="inline-flex items-center gap-1 cursor-pointer">
-                <input
-                  type="radio"
-                  name="nc-visibility"
-                  checked={visibility === "private"}
-                  onChange={() => setVisibility("private")}
-                />
-                <span>个人私密</span>
-              </label>
-            </div>
-            <label className="inline-flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isForeignRelated}
-                onChange={(e) => setIsForeignRelated(e.target.checked)}
-              />
-              <span>涉外案件（上诉期自动按30日计算）</span>
-            </label>
+          <div className="space-y-2">
+            <span className="block text-xs font-semibold">可见性权限</span>
+            <MdRadioGroup<CaseVisibility>
+              value={visibility}
+              onChange={setVisibility}
+              columns={2}
+              ariaLabel="案件可见性"
+              options={[
+                { value: "team", label: "团队协同", description: "案件组成员与管理员可查看协同" },
+                { value: "private", label: "个人私密", description: "仅本人可见，团队与管理员均不可见" },
+              ]}
+            />
           </div>
 
           {caseCategory === "criminal" && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border border-rose-200 bg-rose-50/60 p-3">
+            <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-error)]/25 bg-[var(--md-sys-color-error-container)]/35 p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label htmlFor="nc-custody" className="block text-xs font-semibold text-rose-900 mb-1">
-                  羁押状态
+                <label htmlFor="nc-crime-type" className="block text-xs font-semibold mb-1">
+                  案件情形（拘留计算适用）
+                </label>
+                <MdSelect
+                  id="nc-crime-type"
+                  value={crimeType}
+                  onChange={(e) => setCrimeType(e.target.value)}
+                  className="text-xs py-1.5"
+                >
+                  {CRIME_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </MdSelect>
+              </div>
+              <div>
+                <label htmlFor="nc-charge" className="block text-xs font-semibold mb-1">
+                  涉嫌罪名
                 </label>
                 <input
-                  id="nc-custody"
+                  id="nc-charge"
                   type="text"
-                  value={custodyStatus}
-                  onChange={(e) => setCustodyStatus(e.target.value)}
-                  placeholder="在押 / 取保候审 / 监视居住"
-                  className="w-full rounded border border-rose-200 bg-white px-2.5 py-1.5 text-xs"
+                  value={chargeName}
+                  onChange={(e) => setChargeName(e.target.value)}
+                  placeholder="如 职务侵占罪"
+                  className="lt-input text-xs py-1.5"
                 />
               </div>
               <div>
-                <label htmlFor="nc-place" className="block text-xs font-semibold text-rose-900 mb-1">
+                <label htmlFor="nc-custody" className="block text-xs font-semibold mb-1">
+                  羁押状态
+                </label>
+                <MdSelect
+                  id="nc-custody"
+                  value={custodyStatus}
+                  onChange={(e) => setCustodyStatus(e.target.value)}
+                  className="text-xs py-1.5"
+                >
+                  {CUSTODY_STATUS_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </MdSelect>
+              </div>
+              <div>
+                <label htmlFor="nc-place" className="block text-xs font-semibold mb-1">
                   羁押看守所
                 </label>
                 <input
@@ -580,67 +574,110 @@ export function CaseList() {
                   value={custodyPlace}
                   onChange={(e) => setCustodyPlace(e.target.value)}
                   placeholder="如 上海市第一看守所"
-                  className="w-full rounded border border-rose-200 bg-white px-2.5 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <label htmlFor="nc-crime" className="block text-xs font-semibold text-rose-900 mb-1">
-                  涉嫌罪名
-                </label>
-                <input
-                  id="nc-crime"
-                  type="text"
-                  value={crimeType}
-                  onChange={(e) => setCrimeType(e.target.value)}
-                  placeholder="如 职务侵占罪"
-                  className="w-full rounded border border-rose-200 bg-white px-2.5 py-1.5 text-xs"
+                  className="lt-input text-xs py-1.5"
                 />
               </div>
             </div>
           )}
 
-          {visibility === "team" && (usersQuery.data?.length ?? 0) > 0 && (
-            <div className="space-y-2 rounded-lg border border-slate-200 p-3">
-              <p className="text-xs font-semibold text-slate-700">
-                分配团队成员（默认将您设为办案组长）
-              </p>
-              <div className="space-y-1.5">
-                {usersQuery.data!.map((u) => {
-                  const chosen = selectedMembers.find((m) => m.user_id === u.id);
-                  const isSelf = u.id === user?.id;
-                  return (
-                    <div
-                      key={u.id}
-                      className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-slate-100 last:border-b-0"
-                    >
-                      <span className="font-medium text-slate-800">
-                        {u.full_name}
-                        {isSelf && (
-                          <span className="ml-1.5 text-[11px] text-slate-500">（本人 · 默认主办）</span>
-                        )}
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        {(["lead", "co", "supervisor"] as CaseMemberRole[]).map((r) => (
-                          <button
-                            key={r}
-                            type="button"
-                            onClick={() => toggleMember(u.id, r)}
-                            className={`rounded-full px-3 py-1 border text-[11px] font-medium transition-colors ${
-                              chosen?.role_in_case === r
-                                ? "border-transparent bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]"
-                                : "border-[var(--md-sys-color-outline-variant)] bg-white text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-low)]"
-                            }`}
-                          >
-                            {CASE_MEMBER_ROLE_LABELS[r]}
-                          </button>
-                        ))}
+          <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-outline-variant)]">
+            <button
+              type="button"
+              aria-expanded={createMoreOpen}
+              onClick={() => setCreateMoreOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between px-3.5 py-2.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-low)]"
+            >
+              <span>更多信息与成员分配（对方当事人、涉外、成员）</span>
+              <span className="text-[var(--md-sys-color-on-surface-variant)]">
+                {createMoreOpen ? "收起" : "展开"}
+              </span>
+            </button>
+
+            {createMoreOpen && (
+              <div className="space-y-3 border-t border-[var(--md-sys-color-outline-variant)]/60 p-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="nc-opponent" className="block text-xs font-semibold mb-1">
+                      对方当事人 / 被害方
+                    </label>
+                    <input
+                      id="nc-opponent"
+                      type="text"
+                      value={opponentName}
+                      onChange={(e) => setOpponentName(e.target.value)}
+                      className="lt-input"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="nc-client-id" className="block text-xs font-semibold mb-1">
+                      当事人证件后4位（法院身份核验用）
+                    </label>
+                    <input
+                      id="nc-client-id"
+                      type="text"
+                      maxLength={4}
+                      value={clientIdLast4}
+                      onChange={(e) => setClientIdLast4(e.target.value)}
+                      placeholder="如 102X"
+                      className="lt-input"
+                    />
+                  </div>
+                </div>
+
+                <MdCheckbox
+                  checked={isForeignRelated}
+                  onChange={setIsForeignRelated}
+                  label="涉外案件（上诉期自动按 30 日计算）"
+                />
+
+                {visibility === "team" &&
+                  (usersQuery.data ?? []).filter((u) => u.is_active).length > 0 && (
+                    <div className="space-y-2 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-3">
+                      <p className="text-xs font-semibold">
+                        分配团队成员（默认将您设为办案组长）
+                      </p>
+                      <div className="space-y-1.5">
+                        {(usersQuery.data ?? [])
+                          .filter((u) => u.is_active)
+                          .map((u) => {
+                            const chosen = selectedMembers.find((m) => m.user_id === u.id);
+                            const isSelf = u.id === user?.id;
+                            return (
+                              <div
+                                key={u.id}
+                                className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-[var(--md-sys-color-outline-variant)]/40 last:border-b-0"
+                              >
+                                <span className="font-medium">
+                                  {u.full_name}
+                                  {isSelf && (
+                                    <span className="ml-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                                      （本人 · 默认主办）
+                                    </span>
+                                  )}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {(["lead", "co", "supervisor"] as CaseMemberRole[]).map((r) => (
+                                    <button
+                                      key={r}
+                                      type="button"
+                                      onClick={() => toggleMember(u.id, r)}
+                                      className={`lt-chip py-1 text-[11px] ${
+                                        chosen?.role_in_case === r ? "lt-chip-active" : ""
+                                      }`}
+                                    >
+                                      {CASE_MEMBER_ROLE_LABELS[r]}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
-                  );
-                })}
+                  )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="flex justify-end gap-2 pt-2">
             <button

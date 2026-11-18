@@ -152,47 +152,47 @@ export const TRIAGE_STATUS_META: Record<
 > = {
   pending: {
     label: "待分拣确认",
-    badgeClass: "bg-amber-100 text-amber-800 border-amber-300",
+    badgeClass: "bg-[#fef1d6] text-[#7a4b00] border-[#f6d48b]",
   },
   manual: {
     label: "需验证/人工取回",
-    badgeClass: "bg-rose-100 text-rose-800 border-rose-300",
+    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-[var(--md-sys-color-error)]/30",
   },
   confirmed: {
     label: "已确认入案",
-    badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-[var(--md-sys-color-tertiary)]/30",
   },
   ignored: {
     label: "已忽略",
-    badgeClass: "bg-slate-100 text-slate-600 border-slate-300",
+    badgeClass: "bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] border-[var(--md-sys-color-outline-variant)]",
   },
 };
 
 export const EVENT_TYPE_PRESETS: Array<{ value: string; label: string; categories?: CaseCategory[] }> = [
-  { value: "judgment_served", label: "判决书送达（触发民事15日 / 涉外30日 / 刑事10日 / 行政15日上诉期）", categories: ["civil", "criminal", "administrative"] },
-  { value: "ruling_served", label: "裁定书送达（触发民事10日 / 刑事5日 / 行政10日 / 执行复议10日）", categories: ["civil", "criminal", "administrative", "enforcement"] },
-  { value: "pleading_served", label: "起诉状/仲裁申请书副本送达（触发答辩期与管辖异议期）", categories: ["civil", "administrative", "labor_arbitration"] },
-  { value: "evidence_notice_served", label: "举证通知书送达（触发民事举证期限）", categories: ["civil"] },
-  { value: "judgment_effective", label: "终审判决生效（触发民事6个月再审申请期）", categories: ["civil"] },
-  { value: "performance_expired", label: "履行期限届满（触发民事/执行和解2年申请执行期）", categories: ["civil", "enforcement"] },
-  { value: "preservation_bank_done", label: "银行存款冻结完成（触发1年续冻提醒）", categories: ["civil", "enforcement"] },
-  { value: "preservation_movable_done", label: "动产查封扣押完成（触发2年续封提醒）", categories: ["civil", "enforcement"] },
-  { value: "preservation_real_estate_done", label: "不动产/股权查封完成（触发3年续封提醒）", categories: ["civil", "enforcement"] },
-  { value: "detention_notified", label: "刑事拘留起始（触发48h会见窗口与37天批捕盯防）", categories: ["criminal"] },
-  { value: "case_transferred_arrest", label: "公安提请批准逮捕（触发检察院7日审查批捕期）", categories: ["criminal"] },
-  { value: "arrest_executed", label: "逮捕执行（触发2个月侦查羁押期限）", categories: ["criminal"] },
-  { value: "bail_granted", label: "取保候审决定（触发12个月期限提醒）", categories: ["criminal"] },
-  { value: "prosecution_review_started", label: "移送审查起诉（触发1个月审查起诉期）", categories: ["criminal"] },
-  { value: "admin_act_known", label: "知道/应当知道行政行为（触发60日复议 / 6个月起诉期）", categories: ["administrative"] },
-  { value: "reconsideration_decision_served", label: "行政复议决定书送达（触发15日起诉期）", categories: ["administrative"] },
-  { value: "arbitration_award_served", label: "仲裁裁决书送达（劳仲15日起诉 / 商仲3个月撤裁）", categories: ["labor_arbitration", "commercial_arb"] },
-  { value: "enforcement_notice_served", label: "执行通知书/报告财产令送达（触发10日核验节点）", categories: ["enforcement"] },
-  { value: "enforcement_objection_served", label: "执行异议裁定书送达（触发15日执行异议之诉期）", categories: ["enforcement"] },
-  { value: "enforcement_settlement_signed", label: "执行和解协议签署（触发30日履行进度跟踪）", categories: ["enforcement"] },
-  { value: "retainer_started", label: "常年法律顾问服务起算（触发1年到期续签提醒）", categories: ["non_litigation"] },
-  { value: "project_milestone_started", label: "非诉尽调/专项成果节点起算（触发15日交付核验）", categories: ["non_litigation"] },
-  { value: "payment_notice_issued", label: "非诉项目阶段请款单发出（触发30日回款跟进）", categories: ["non_litigation"] },
-  { value: "contract_review_requested", label: "法顾日常合同审查收件（触发3日反馈SLA期限）", categories: ["non_litigation"] },
+  { value: "judgment_served", label: "判决书送达", categories: ["civil", "criminal", "administrative"] },
+  { value: "ruling_served", label: "裁定书送达", categories: ["civil", "criminal", "administrative", "enforcement"] },
+  { value: "pleading_served", label: "起诉状/仲裁申请书副本送达", categories: ["civil", "administrative", "labor_arbitration"] },
+  { value: "evidence_notice_served", label: "举证通知书送达", categories: ["civil"] },
+  { value: "judgment_effective", label: "终审判决生效", categories: ["civil"] },
+  { value: "performance_expired", label: "履行期限届满", categories: ["civil", "enforcement"] },
+  { value: "preservation_bank_done", label: "银行存款冻结完成", categories: ["civil", "enforcement"] },
+  { value: "preservation_movable_done", label: "动产查封扣押完成", categories: ["civil", "enforcement"] },
+  { value: "preservation_real_estate_done", label: "不动产/股权查封完成", categories: ["civil", "enforcement"] },
+  { value: "detention_notified", label: "刑事拘留起始", categories: ["criminal"] },
+  { value: "case_transferred_arrest", label: "公安提请批准逮捕", categories: ["criminal"] },
+  { value: "arrest_executed", label: "逮捕执行", categories: ["criminal"] },
+  { value: "bail_granted", label: "取保候审决定", categories: ["criminal"] },
+  { value: "prosecution_review_started", label: "移送审查起诉", categories: ["criminal"] },
+  { value: "admin_act_known", label: "知道/应当知道行政行为", categories: ["administrative"] },
+  { value: "reconsideration_decision_served", label: "行政复议决定书送达", categories: ["administrative"] },
+  { value: "arbitration_award_served", label: "仲裁裁决书送达", categories: ["labor_arbitration", "commercial_arb"] },
+  { value: "enforcement_notice_served", label: "执行通知书/报告财产令送达", categories: ["enforcement"] },
+  { value: "enforcement_objection_served", label: "执行异议裁定书送达", categories: ["enforcement"] },
+  { value: "enforcement_settlement_signed", label: "执行和解协议签署", categories: ["enforcement"] },
+  { value: "retainer_started", label: "常年法律顾问服务起算", categories: ["non_litigation"] },
+  { value: "project_milestone_started", label: "非诉尽调/专项成果节点起算", categories: ["non_litigation"] },
+  { value: "payment_notice_issued", label: "非诉项目阶段请款单发出", categories: ["non_litigation"] },
+  { value: "contract_review_requested", label: "法顾日常合同审查收件", categories: ["non_litigation"] },
 ];
 
 export const EVENT_TYPE_LABELS: Record<string, string> = {
@@ -239,11 +239,89 @@ export function getServiceMethodLabel(method: string): string {
 }
 
 export const DELIVERY_STATUS_META: Record<string, { label: string; badgeClass: string }> = {
-  sent: { label: "已推送", badgeClass: "bg-emerald-100 text-emerald-800" },
-  skipped_completed: { label: "已办结跳过", badgeClass: "bg-slate-100 text-slate-700" },
-  pending: { label: "待投递", badgeClass: "bg-amber-100 text-amber-800" },
-  failed: { label: "投递失败", badgeClass: "bg-rose-100 text-rose-800" },
+  sent: {
+    label: "已推送",
+    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-[var(--md-sys-color-tertiary)]/30",
+  },
+  skipped_completed: {
+    label: "已办结跳过",
+    badgeClass: "bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] border-[var(--md-sys-color-outline-variant)]",
+  },
+  pending: {
+    label: "待投递",
+    badgeClass: "bg-[#fef1d6] text-[#7a4b00] border-[#f6d48b]",
+  },
+  failed: {
+    label: "投递失败",
+    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-[var(--md-sys-color-error)]/30",
+  },
 };
+
+export const CRIME_TYPE_OPTIONS = [
+  { value: "一般犯罪", label: "一般犯罪" },
+  { value: "流窜/多次/结伙作案", label: "流窜/多次/结伙作案（适用延长拘留期限）" },
+] as const;
+
+export const CUSTODY_STATUS_OPTIONS = [
+  { value: "", label: "未填写 / 不适用" },
+  { value: "在押", label: "在押（看守所羁押）" },
+  { value: "取保候审", label: "取保候审" },
+  { value: "监视居住", label: "监视居住" },
+  { value: "未羁押", label: "未羁押 / 自由身" },
+] as const;
+
+export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
+  create_case: "新建案件",
+  update_case: "更新案件信息",
+  replace_members: "调整办案成员",
+  create_event: "录入程序事件",
+  recalculate_event: "重算程序期限",
+  upload_file: "上传案件卷宗",
+  delete_file: "删除案件文件",
+  create_deadline: "创建自定义期限",
+  update_deadline: "修改法定期限",
+  delete_deadline: "删除期限",
+  create_schedule: "创建日程安排",
+  update_schedule: "更新日程安排",
+  delete_schedule: "删除日程",
+  auto_archive_triage: "自动识别归档入案",
+  confirm_triage: "人工确认归档入案",
+  reopen_triage: "撤销归档回退",
+  rule_recalculate: "期限规则重算",
+};
+
+export function getCaseAuditActionLabel(action: string): string {
+  return CASE_AUDIT_ACTION_LABELS[action] ?? action;
+}
+
+export function toShanghaiIsoWithOffset(localDateTime: string): string {
+  const clean = localDateTime.trim();
+  if (!clean) return "";
+  if (clean.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(clean)) {
+    return clean;
+  }
+  const normalized = clean.length === 16 ? `${clean}:00` : clean;
+  return `${normalized}+08:00`;
+}
+
+export function toShanghaiDateTimeLocal(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  const hh = map.hour === "24" ? "00" : map.hour;
+  return `${map.year}-${map.month}-${map.day}T${hh}:${map.minute}`;
+}
 
 export const SOURCE_TYPE_LABELS: Record<string, string> = {
   deadline: "法定期限",

@@ -70,13 +70,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [token, user, refreshUser]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const res = await authApi.login(username, password);
-    setStoredToken(res.access_token);
-    setToken(res.access_token);
-    setUser(res.user);
-    setLoading(false);
-  }, []);
+  const login = useCallback(
+    async (username: string, password: string) => {
+      queryClient.clear();
+      const res = await authApi.login(username, password);
+      setStoredToken(res.access_token);
+      setToken(res.access_token);
+      setUser(res.user);
+      setLoading(false);
+    },
+    [queryClient]
+  );
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, logout, refreshUser }}>

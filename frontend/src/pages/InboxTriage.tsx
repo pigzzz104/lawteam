@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronDown,
   Download,
   Eye,
   FileText,
@@ -12,31 +13,50 @@ import {
   KeyRound,
   RefreshCw,
   RotateCcw,
+  Search,
   Send,
+  Settings2,
   Sparkles,
   Upload,
 } from "lucide-react";
 import { casesApi, inboxApi, rulesApi } from "@/api/client";
 import { ModalDialog } from "@/components/ModalDialog";
 import { TriageStatusBadge } from "@/components/StatusBadges";
+import {
+  ConfirmDialog,
+  MdCheckbox,
+  MdFileDropzone,
+  MdRadioGroup,
+  MdSegmentedButton,
+  MdSelect,
+  MdSwitch,
+} from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
 import {
   CASE_CATEGORY_META,
+  CRIME_TYPE_OPTIONS,
   EVENT_TYPE_PRESETS,
   SERVICE_METHOD_OPTIONS,
   STANDARD_CASE_SUBFOLDERS,
   formatShanghaiDateTime,
   getEventTypeLabel,
+  toShanghaiDateTimeLocal,
+  toShanghaiIsoWithOffset,
   todayShanghaiIso,
 } from "@/lib/domain";
-import type { CaseCategory, CaseVisibility, InboxTriageRead } from "@/types/api";
+import type {
+  AutoTriagePolicy,
+  CaseCategory,
+  CaseVisibility,
+  InboxTriageRead,
+} from "@/types/api";
 
 const SMS_PRESETS = [
   {
     label: "法院送达（上海一中院 · 尾号8966）",
     sender: "1069012368",
     content:
-      "【上海市第一中级人民法院】张晨你好，请查收（2026）沪01民终6604号案件中你的送达文书。点击链接查阅：https://zxfw.court.gov.cn/zxfw/#/pagesAjkj/app/wssd/index?qdbh=d912b9c5315f4aafa1662b2e5cbf8fe3&sdbh=2bc0bb21b92f46198b836e53f6030bf6&sdsin=77b305fb135ee6acca10ab3e138ae23c",
+      "【上海市第一中级人民法院】张晨你好，请查收（2026）沪01民终6604号案件中你的送达文书。点击链接查阅：https://zxfw.court.gov.cn/zxfw/#/pagesAjkj/app/wssd/index?qdbh=d912b9c5315f4aafa1662b2e5cbf8fe3&sdbh=2bc0bb21b92f46198b836e138ae23c&sdsin=77b305fb135ee6acca10ab3e138ae23c",
   },
   {
     label: "广州越秀法院（上诉缴费单）",
@@ -64,50 +84,51 @@ const SMS_PRESETS = [
   },
 ];
 
-function toShanghaiDatetimeLocal(iso: string, offsetMinutes = 0): string {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) {
-    return iso.slice(0, 16);
-  }
-  const shifted = new Date(parsed.getTime() + offsetMinutes * 60_000);
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(shifted);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+type InboxViewTab = "needs_action" | "auto_archived" | "manual_confirmed" | "ignored" | "all";
+
+function addMinutesLocal(isoLocal: string, minutes: number): string {
+  const isoWithOffset = toShanghaiIsoWithOffset(isoLocal);
+  const parsed = new Date(isoWithOffset);
+  if (Number.isNaN(parsed.getTime())) return isoLocal;
+  const shifted = new Date(parsed.getTime() + minutes * 60_000);
+  return toShanghaiDateTimeLocal(shifted.toISOString());
 }
 
-type InboxViewTab = "needs_action" | "auto_archived" | "confirmed" | "ignored" | "all";
+function tabForItem(item: InboxTriageRead): InboxViewTab {
+  if (item.status === "pending" || item.status === "manual") return "needs_action";
+  if (item.status === "confirmed") return item.auto_archived ? "auto_archived" : "manual_confirmed";
+  if (item.status === "ignored") return "ignored";
+  return "all";
+}
 
 export function InboxTriage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const detailPanelRef = useRef<HTMLDivElement>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryIdParam = searchParams.get("id");
 
   const [viewTab, setViewTab] = useState<InboxViewTab>(queryIdParam ? "all" : "needs_action");
+  const [searchKw, setSearchKw] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(
-    queryIdParam && Number.isFinite(Number(queryIdParam)) ? Number(queryIdParam) : null
+    queryIdParam ? Number(queryIdParam) : null
   );
+  const detailPanelRef = useRef<HTMLDivElement>(null);
+
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [batchIgnoreConfirmOpen, setBatchIgnoreConfirmOpen] = useState(false);
+  const [policyOpen, setPolicyOpen] = useState(false);
 
-  // Retry fetch state
+  // Verification retry inputs
   const [retryPhoneLast4, setRetryPhoneLast4] = useState(user?.phone_last4 || "");
   const [retryIdLast4, setRetryIdLast4] = useState(user?.id_card_last4 || "");
   const [retryCode, setRetryCode] = useState("");
 
   // Confirm form state
   const [caseMode, setCaseMode] = useState<"existing" | "new">("existing");
+  const [caseModeTouched, setCaseModeTouched] = useState(false);
   const [targetCaseId, setTargetCaseId] = useState<string>("");
   const [newCaseTitle, setNewCaseTitle] = useState("");
   const [newCaseNumber, setNewCaseNumber] = useState("");
@@ -115,6 +136,10 @@ export function InboxTriage() {
   const [newClientName, setNewClientName] = useState("");
   const [newVisibility, setNewVisibility] = useState<CaseVisibility>("team");
   const [newAgency, setNewAgency] = useState("");
+  const [newCrimeType, setNewCrimeType] = useState("一般犯罪");
+  const [newChargeName, setNewChargeName] = useState("");
+
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [fileSubfolder, setFileSubfolder] = useState<string>(STANDARD_CASE_SUBFOLDERS[0]);
   const [newStage, setNewStage] = useState("");
   const [eventType, setEventType] = useState("");
@@ -127,13 +152,14 @@ export function InboxTriage() {
   const [hearingEnd, setHearingEnd] = useState(`${todayShanghaiIso()}T11:00`);
   const [hearingLoc, setHearingLoc] = useState("");
 
-  // Modals: simulate & manual upload
+  // Simulate SMS modal
   const [simOpen, setSimOpen] = useState(false);
   const [simContent, setSimContent] = useState(SMS_PRESETS[0].content);
   const [simSender, setSimSender] = useState(SMS_PRESETS[0].sender);
-  const [simPhoneLast4, setSimPhoneLast4] = useState("8966");
+  const [simPhoneLast4, setSimPhoneLast4] = useState(user?.phone_last4 || "8966");
   const [simAutoFetch, setSimAutoFetch] = useState(true);
 
+  // Manual upload modal
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadType, setUploadType] = useState<"judicial_stage_and_doc" | "invoice_archive">(
     "judicial_stage_and_doc"
@@ -141,10 +167,11 @@ export function InboxTriage() {
   const [uploadCaseId, setUploadCaseId] = useState<string>("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadNotes, setUploadNotes] = useState("");
+  const [uploadAutoArchive, setUploadAutoArchive] = useState(true);
 
   const inboxQuery = useQuery({
-    queryKey: ["inbox", "all-items"],
-    queryFn: () => inboxApi.list(),
+    queryKey: ["inbox", "items"],
+    queryFn: () => inboxApi.list({ limit: 500 }),
   });
 
   const casesQuery = useQuery({
@@ -157,6 +184,12 @@ export function InboxTriage() {
     queryFn: rulesApi.stageTemplates,
   });
 
+  const policiesQuery = useQuery({
+    queryKey: ["auto-triage-policies"],
+    queryFn: rulesApi.autoTriagePolicies,
+    enabled: policyOpen,
+  });
+
   useEffect(() => {
     if (!user) return;
     setRetryPhoneLast4((prev) => prev || user.phone_last4 || "");
@@ -164,31 +197,74 @@ export function InboxTriage() {
   }, [user]);
 
   const allItems = inboxQuery.data ?? [];
+
+  // Deep-link sync `/inbox?id=123` even when already mounted
+  useEffect(() => {
+    if (!queryIdParam) return;
+    const idNum = Number(queryIdParam);
+    if (!Number.isFinite(idNum)) return;
+    setSelectedId(idNum);
+    const match = allItems.find((it) => it.id === idNum);
+    if (match) {
+      setViewTab(tabForItem(match));
+    } else {
+      setViewTab("all");
+    }
+  }, [queryIdParam, allItems]);
+
   const counts = useMemo(() => {
     let needsAction = 0;
     let autoArchived = 0;
-    let confirmed = 0;
+    let manualConfirmed = 0;
     let ignored = 0;
     for (const it of allItems) {
       if (it.status === "pending" || it.status === "manual") needsAction += 1;
-      if (it.status === "confirmed") {
-        confirmed += 1;
+      else if (it.status === "confirmed") {
         if (it.auto_archived) autoArchived += 1;
-      }
-      if (it.status === "ignored") ignored += 1;
+        else manualConfirmed += 1;
+      } else if (it.status === "ignored") ignored += 1;
     }
-    return { needsAction, autoArchived, confirmed, ignored, all: allItems.length };
+    return {
+      needsAction,
+      autoArchived,
+      manualConfirmed,
+      ignored,
+      all: allItems.length,
+    };
   }, [allItems]);
 
   const items = useMemo(() => {
+    const kw = searchKw.trim().toLowerCase();
     return allItems.filter((it) => {
-      if (viewTab === "needs_action") return it.status === "pending" || it.status === "manual";
-      if (viewTab === "auto_archived") return it.status === "confirmed" && it.auto_archived;
-      if (viewTab === "confirmed") return it.status === "confirmed";
-      if (viewTab === "ignored") return it.status === "ignored";
-      return true;
+      if (viewTab === "needs_action" && it.status !== "pending" && it.status !== "manual") {
+        return false;
+      }
+      if (viewTab === "auto_archived" && !(it.status === "confirmed" && it.auto_archived)) {
+        return false;
+      }
+      if (viewTab === "manual_confirmed" && !(it.status === "confirmed" && !it.auto_archived)) {
+        return false;
+      }
+      if (viewTab === "ignored" && it.status !== "ignored") {
+        return false;
+      }
+      if (!kw) return true;
+      const p = it.extracted_payload || {};
+      const haystack = [
+        String(p.case_number || ""),
+        String(p.doc_title_hint || ""),
+        String(p.agency || ""),
+        it.matched_case_title || "",
+        it.matched_case_number || "",
+        it.sms_content || "",
+        it.sms_sender || "",
+        it.triage_reason || "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(kw);
     });
-  }, [allItems, viewTab]);
+  }, [allItems, viewTab, searchKw]);
 
   const selectedItem: InboxTriageRead | undefined =
     items.find((i) => i.id === selectedId) ?? items[0];
@@ -200,45 +276,47 @@ export function InboxTriage() {
   useEffect(() => {
     if (!selectedItem) return;
     const p = selectedItem.extracted_payload || {};
+    setCaseModeTouched(false);
     if (selectedItem.matched_case_id) {
       setCaseMode("existing");
       setTargetCaseId(String(selectedItem.matched_case_id));
     } else {
-      setCaseMode(casesQuery.data?.length ? "existing" : "new");
+      setCaseMode((casesQuery.data?.length ?? 0) > 0 ? "existing" : "new");
       setTargetCaseId("");
     }
     setNewCaseNumber((p.case_number as string) || "");
     setNewCaseTitle(
       (p.case_number as string)
         ? `${p.case_number} 新建协同案件`
-        : ((p.doc_title_hint as string) || "短信导入新案件")
+        : (p.doc_title_hint as string) || "短信导入新案件"
     );
     setNewCaseCategory((p.case_category_guess as CaseCategory) || "civil");
     setNewClientName(
       (p.client_hint as string) || (p.client_name_guess as string) || "待补充委托人"
     );
     setNewAgency((p.agency as string) || (p.court_or_agency as string) || "");
+    setNewCrimeType((p.crime_type as string) || "一般犯罪");
+    setNewChargeName((p.charge_name as string) || "");
     setFileSubfolder(
-      selectedItem.item_type === "invoice_archive"
-        ? "05_财务与发票"
-        : "01_司法与程序文书"
+      selectedItem.item_type === "invoice_archive" ? "05_财务与发票" : "01_司法与程序文书"
     );
     setNewStage((p.suggested_stage as string) || (p.stage_suggestion as string) || "");
-    setEventType((p.event_type_guess as string) || "");
+    const evGuess = (p.event_type_guess as string) || "";
+    setEventType(evGuess);
+    setAdvancedOpen(selectedItem.item_type !== "invoice_archive" && !evGuess);
     setEventDate(
       typeof p.event_date === "string" && /^\d{4}-\d{2}-\d{2}/.test(p.event_date)
         ? p.event_date.slice(0, 10)
         : todayShanghaiIso()
     );
     setServiceMethod("electronic");
-    setAuthorityDays(
-      p.authority_specified_days ? String(p.authority_specified_days) : ""
-    );
+    setAuthorityDays(p.authority_specified_days ? String(p.authority_specified_days) : "");
     setRetryCode("");
     setCreateHearing(Boolean(p.hearing_time));
     if (typeof p.hearing_time === "string") {
-      setHearingStart(toShanghaiDatetimeLocal(p.hearing_time, 0));
-      setHearingEnd(toShanghaiDatetimeLocal(p.hearing_time, 90));
+      const startLocal = toShanghaiDateTimeLocal(p.hearing_time) || `${todayShanghaiIso()}T09:30`;
+      setHearingStart(startLocal);
+      setHearingEnd(addMinutesLocal(startLocal, 90));
       setHearingTitle(`${(p.case_number as string) || ""} 开庭审理`.trim());
       setHearingLoc((p.hearing_location as string) || "");
     } else {
@@ -248,6 +326,13 @@ export function InboxTriage() {
       setHearingLoc("");
     }
   }, [syncPayloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resolve async casesQuery race so default caseMode updates if user hasn't manually toggled
+  useEffect(() => {
+    if (!selectedItem || caseModeTouched || selectedItem.matched_case_id) return;
+    if (!casesQuery.isSuccess) return;
+    setCaseMode((casesQuery.data?.length ?? 0) > 0 ? "existing" : "new");
+  }, [casesQuery.isSuccess, casesQuery.data?.length, selectedItem, caseModeTouched]);
 
   const refreshInbox = () => {
     queryClient.invalidateQueries({ queryKey: ["inbox"] });
@@ -270,8 +355,10 @@ export function InboxTriage() {
       setErrorMsg(null);
       setFeedback(
         updated.status === "pending"
-          ? `抓取重试成功，已获取 ${updated.downloaded_files.length} 个文件`
-          : `重试完成：${updated.error_or_manual_reason || updated.status}`
+          ? `取回成功，已获取 ${updated.downloaded_files.length} 份文书`
+          : updated.status === "confirmed"
+            ? "验证取回后已自动归档"
+            : `重试完成：${updated.error_or_manual_reason || updated.triage_reason || "请继续确认"}`
       );
     },
     onError: (err: Error) => {
@@ -284,8 +371,10 @@ export function InboxTriage() {
     mutationFn: () => {
       if (!selectedItem) throw new Error("未选中条目");
       if (createHearing) {
-        const startMs = new Date(hearingStart).getTime();
-        const endMs = new Date(hearingEnd).getTime();
+        const startIso = toShanghaiIsoWithOffset(hearingStart);
+        const endIso = toShanghaiIsoWithOffset(hearingEnd);
+        const startMs = new Date(startIso).getTime();
+        const endMs = new Date(endIso).getTime();
         if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
           throw new Error("开庭结束时间必须晚于开始时间");
         }
@@ -301,6 +390,12 @@ export function InboxTriage() {
                 visibility: newVisibility,
                 client_name: newClientName.trim() || "待补充委托人",
                 handling_agency: newAgency.trim() || null,
+                ...(newCaseCategory === "criminal"
+                  ? {
+                      crime_type: newCrimeType,
+                      charge_name: newChargeName.trim() || null,
+                    }
+                  : {}),
               }
             : null,
         event_type: eventType.trim() || null,
@@ -313,8 +408,8 @@ export function InboxTriage() {
           ? {
               category: "hearing",
               title: hearingTitle.trim() || "开庭审理",
-              start_time: new Date(hearingStart).toISOString(),
-              end_time: new Date(hearingEnd).toISOString(),
+              start_time: toShanghaiIsoWithOffset(hearingStart),
+              end_time: toShanghaiIsoWithOffset(hearingEnd),
               location: hearingLoc.trim() || null,
               risk_level: "high",
             }
@@ -325,7 +420,7 @@ export function InboxTriage() {
       refreshInbox();
       setErrorMsg(null);
       setFeedback(
-        `入案确认成功！关联案件 #${res.case_id}，归档 ${res.archived_documents.length} 份文件，派生 ${res.generated_deadline_count} 条期限`
+        `入案确认成功！归档 ${res.archived_documents.length} 份文件，派生 ${res.generated_deadline_count} 条期限`
       );
     },
     onError: (err: Error) => {
@@ -354,7 +449,8 @@ export function InboxTriage() {
       setErrorMsg(null);
       setViewTab("needs_action");
       setSelectedId(reopened.id);
-      setFeedback(`已撤回归档 #${reopened.id}，请重新选择归属案件并确认`);
+      setSearchParams({ id: String(reopened.id) }, { replace: true });
+      setFeedback(`已恢复 #${reopened.id} 到待处理队列`);
     },
     onError: (err: Error) => {
       setFeedback(null);
@@ -366,10 +462,12 @@ export function InboxTriage() {
     mutationFn: (ids: number[]) => inboxApi.batchIgnore(ids),
     onSuccess: (res) => {
       refreshInbox();
+      setBatchIgnoreConfirmOpen(false);
       setErrorMsg(null);
       setFeedback(`已批量忽略 ${res.ignored_count} 条待处理记录`);
     },
     onError: (err: Error) => {
+      setBatchIgnoreConfirmOpen(false);
       setFeedback(null);
       setErrorMsg(err.message);
     },
@@ -389,15 +487,14 @@ export function InboxTriage() {
       setSimOpen(false);
       setSimError(null);
       setSelectedId(created.id);
+      setSearchParams({ id: String(created.id) }, { replace: true });
+      setViewTab(tabForItem(created));
       if (created.status === "confirmed" && created.auto_archived) {
-        setViewTab("auto_archived");
         setFeedback(`已自动归档 #${created.id}：${created.triage_reason || "命中规则并自动入案"}`);
       } else if (created.status === "ignored") {
-        setViewTab("ignored");
-        setFeedback(`非涉案短信 #${created.id} 已自动忽略降噪`);
+        setFeedback(`非涉案短信 #${created.id} 已自动忽略`);
       } else {
-        setViewTab("needs_action");
-        setFeedback(`已接入并转人工确认 #${created.id}：${created.triage_reason || "请人工核对"}`);
+        setFeedback(`已接入并转待处理 #${created.id}：${created.triage_reason || "请确认入案"}`);
       }
     },
     onError: (err: Error) => setSimError(err.message),
@@ -410,6 +507,7 @@ export function InboxTriage() {
         item_type: uploadType,
         case_id: uploadCaseId ? Number(uploadCaseId) : null,
         notes: uploadNotes.trim() || undefined,
+        auto_archive: uploadAutoArchive,
       }),
     onSuccess: (created) => {
       refreshInbox();
@@ -419,40 +517,84 @@ export function InboxTriage() {
       setUploadCaseId("");
       setUploadNotes("");
       setSelectedId(created.id);
+      setSearchParams({ id: String(created.id) }, { replace: true });
+      setViewTab(tabForItem(created));
       if (created.status === "confirmed" && created.auto_archived) {
-        setViewTab("auto_archived");
-        setFeedback(`上传文件已自动归档 #${created.id}：${created.triage_reason || "已自动归档至案件目录"}`);
+        setFeedback(`上传文件已自动归档 #${created.id}：${created.triage_reason || "已入案"}`);
       } else {
-        setViewTab("needs_action");
-        setFeedback(`已上传并解析文件，待人工确认 #${created.id}`);
+        setFeedback(`已上传并解析文件，请确认入案 #${created.id}`);
       }
     },
     onError: (err: Error) => setUploadError(err.message),
   });
 
-  const stageSuggestions =
-    templatesQuery.data?.categories[newCaseCategory]?.stages ?? [];
+  const updatePolicyMut = useMutation({
+    mutationFn: ({ key, mode }: { key: string; mode: "auto_archive" | "require_confirm" }) =>
+      rulesApi.updateAutoTriagePolicy(key, mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auto-triage-policies"] });
+    },
+    onError: (err: Error) => {
+      setErrorMsg(err.message);
+    },
+  });
+
+  // Match stageSuggestions with selected case's category + procedure_subtype
+  const existingSelectedCase = useMemo(
+    () => (casesQuery.data ?? []).find((c) => String(c.id) === targetCaseId),
+    [casesQuery.data, targetCaseId]
+  );
+  const effectiveCategory: CaseCategory =
+    caseMode === "existing" && existingSelectedCase
+      ? existingSelectedCase.case_category
+      : newCaseCategory;
+  const effectiveSubtype =
+    caseMode === "existing" && existingSelectedCase ? existingSelectedCase.procedure_subtype : undefined;
+
+  const stageSuggestions = useMemo(() => {
+    const catTpl = templatesQuery.data?.categories?.[effectiveCategory];
+    if (!catTpl) return [];
+    if (effectiveSubtype && catTpl.subtypes?.[effectiveSubtype]) {
+      return catTpl.subtypes[effectiveSubtype];
+    }
+    return catTpl.stages ?? [];
+  }, [templatesQuery.data, effectiveCategory, effectiveSubtype]);
+
+  const filteredEventPresets = useMemo(() => {
+    const matching = EVENT_TYPE_PRESETS.filter(
+      (p) => !p.categories || p.categories.includes(effectiveCategory)
+    );
+    return matching.length > 0 ? matching : EVENT_TYPE_PRESETS;
+  }, [effectiveCategory]);
 
   const ambiguousCandidateIds = Array.isArray(selectedItem?.extracted_payload?.ambiguous_case_ids)
     ? (selectedItem?.extracted_payload?.ambiguous_case_ids as number[])
     : [];
-  const ambiguousCases = (casesQuery.data ?? []).filter((c) =>
-    ambiguousCandidateIds.includes(c.id)
-  );
+  const ambiguousCases = (casesQuery.data ?? []).filter((c) => ambiguousCandidateIds.includes(c.id));
   const needsActionIds = items
     .filter((it) => it.status === "pending" || it.status === "manual")
     .map((it) => it.id);
 
+  const selectedPayload = selectedItem?.extracted_payload || {};
+  const isAutoCreatedCase = Boolean(selectedPayload.auto_created_case);
+  const relatedCaseHint =
+    typeof selectedPayload.related_case_hint === "string"
+      ? selectedPayload.related_case_hint
+      : null;
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--md-sys-color-on-surface)]">收件箱</h1>
-          <p className="mt-1 text-xs text-slate-600">
-            已配置规则且唯一匹配案号的短信文书与电子发票默认自动归档；仅无覆盖规则、匹配歧义或需人机核验时提醒人工确认。
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-[var(--md-sys-color-on-surface)]">收件箱</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPolicyOpen(true)}
+            className="lt-btn-secondary"
+          >
+            <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>自动规则设置</span>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -462,7 +604,7 @@ export function InboxTriage() {
             className="lt-btn-secondary"
           >
             <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>手动上传 PDF / 发票</span>
+            <span>手动上传文件</span>
           </button>
           <button
             type="button"
@@ -478,40 +620,49 @@ export function InboxTriage() {
         </div>
       </div>
 
-      {/* Status Filter Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap gap-2">
-          {(
-            [
-              { key: "needs_action", label: `需人工处理 (${counts.needsAction})` },
-              { key: "auto_archived", label: `已自动归档 (${counts.autoArchived})` },
-              { key: "confirmed", label: `全部已入案 (${counts.confirmed})` },
-              { key: "ignored", label: `已忽略 (${counts.ignored})` },
-              { key: "all", label: `全部 (${counts.all})` },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setViewTab(tab.key)}
-              className={`lt-chip ${viewTab === tab.key ? "lt-chip-active" : ""}`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      {/* Status Filter Tabs & Search */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <MdSegmentedButton<InboxViewTab>
+          value={viewTab}
+          onChange={setViewTab}
+          ariaLabel="收件箱状态筛选"
+          options={[
+            { value: "needs_action", label: "待处理", count: counts.needsAction },
+            { value: "auto_archived", label: "已自动归档", count: counts.autoArchived },
+            { value: "manual_confirmed", label: "人工已归档", count: counts.manualConfirmed },
+            { value: "ignored", label: "已忽略", count: counts.ignored },
+            { value: "all", label: "全部", count: counts.all },
+          ]}
+        />
 
-        {viewTab === "needs_action" && needsActionIds.length > 1 && (
-          <button
-            type="button"
-            disabled={batchIgnoreMut.isPending}
-            onClick={() => batchIgnoreMut.mutate(needsActionIds)}
-            className="lt-btn-secondary py-1.5 px-3 text-xs"
-          >
-            <Ban className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>一键忽略当前 {needsActionIds.length} 条待处理</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
+            />
+            <input
+              type="search"
+              value={searchKw}
+              onChange={(e) => setSearchKw(e.target.value)}
+              placeholder="搜案号、文书名或短信内容..."
+              aria-label="搜索收件箱"
+              className="lt-input pl-8 py-1.5 text-xs w-56"
+            />
+          </div>
+
+          {viewTab === "needs_action" && needsActionIds.length > 1 && (
+            <button
+              type="button"
+              disabled={batchIgnoreMut.isPending}
+              onClick={() => setBatchIgnoreConfirmOpen(true)}
+              className="lt-btn-secondary py-1.5 px-3 text-xs"
+            >
+              <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>批量忽略 ({needsActionIds.length})</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {feedback && (
@@ -526,28 +677,21 @@ export function InboxTriage() {
       )}
 
       {inboxQuery.isLoading ? (
-        <div className="lt-card p-12 text-center text-sm text-slate-600">
+        <div className="lt-card p-12 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
           正在加载收件箱...
         </div>
       ) : inboxQuery.isError ? (
         <div role="alert" className="lt-alert-error flex items-center justify-between gap-3">
           <span>收件箱加载失败，请重试。</span>
-          <button
-            type="button"
-            onClick={() => inboxQuery.refetch()}
-            className="lt-btn-secondary py-1"
-          >
+          <button type="button" onClick={() => inboxQuery.refetch()} className="lt-btn-secondary py-1">
             重新加载
           </button>
         </div>
       ) : items.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center space-y-2">
-          <Inbox className="h-8 w-8 text-slate-500 mx-auto" aria-hidden="true" />
-          <p className="text-sm font-semibold text-slate-800">
-            {viewTab === "needs_action" ? "当前没有需要人工处理的异常或未匹配条目" : "当前分类下暂无记录"}
-          </p>
-          <p className="text-xs text-slate-600">
-            有规则覆盖的短信文书与电子发票已自动归档；可切换上方「已自动归档」查看结果，或点击右上角测试接入。
+        <div className="lt-card p-12 text-center space-y-2 border-dashed">
+          <Inbox className="h-8 w-8 text-[var(--md-sys-color-on-surface-variant)] mx-auto" aria-hidden="true" />
+          <p className="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+            {viewTab === "needs_action" ? "当前没有待处理的短信或文书" : "当前分类下暂无记录"}
           </p>
         </div>
       ) : (
@@ -563,6 +707,7 @@ export function InboxTriage() {
                   type="button"
                   onClick={() => {
                     setSelectedId(item.id);
+                    setSearchParams({ id: String(item.id) }, { replace: true });
                     if (window.innerWidth < 1024) {
                       window.setTimeout(() => {
                         detailPanelRef.current?.scrollIntoView({
@@ -572,48 +717,51 @@ export function InboxTriage() {
                       }, 60);
                     }
                   }}
-                  className={`w-full text-left rounded-[20px] border p-4 transition-all space-y-2 ${
+                  className={`w-full text-left rounded-[var(--md-sys-shape-corner-lg)] border p-4 transition-all space-y-2 ${
                     active
                       ? "border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/35 shadow-sm ring-1 ring-[var(--md-sys-color-primary)]"
                       : "border-[var(--md-sys-color-outline-variant)]/80 bg-[var(--md-sys-color-surface-container-lowest)] hover:bg-[var(--md-sys-color-surface-container-low)]"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <TriageStatusBadge status={item.status} />
                       {item.auto_archived && (
-                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                        <span className="rounded-full bg-[var(--md-sys-color-tertiary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-tertiary-container)]">
                           自动归档
                         </span>
                       )}
+                      {Boolean(p.auto_created_case) && (
+                        <span className="rounded-full bg-[var(--md-sys-color-secondary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-secondary-container)]">
+                          自动建案
+                        </span>
+                      )}
                     </div>
-                    <span className="text-[11px] text-slate-600 tabular-nums">
+                    <span className="text-[11px] text-[var(--md-sys-color-on-surface-variant)] tabular-nums">
                       {formatShanghaiDateTime(item.created_at)}
                     </span>
                   </div>
-                  <p className="text-sm font-bold text-slate-900">
+                  <p className="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
                     {(p.case_number as string) ||
                       (p.doc_title_hint as string) ||
-                      (item.item_type === "invoice_archive" ? "电子发票归档" : `短信分拣 #${item.id}`)}
+                      (item.item_type === "invoice_archive" ? "电子发票归档" : `待确认事项 #${item.id}`)}
                   </p>
-                  <p className="text-xs text-slate-600 line-clamp-2">
+                  <p className="text-xs text-[var(--md-sys-color-on-surface-variant)] line-clamp-2">
                     {item.sms_content || (p.notes as string) || "手动上传文档"}
                   </p>
                   {item.triage_reason && (
-                    <p className="text-[11px] text-amber-800 line-clamp-1">
-                      {item.triage_reason}
-                    </p>
+                    <p className="text-[11px] text-[#7a4b00] line-clamp-1">{item.triage_reason}</p>
                   )}
-                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
-                    <span>归属：{item.owner_name}</span>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                    <span>接收：{item.owner_name}</span>
                     {item.matched_case_title && (
-                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-800 font-medium">
-                        匹配：{item.matched_case_title}
+                      <span className="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[var(--md-sys-color-on-primary-container)] font-medium">
+                        {item.matched_case_title}
                       </span>
                     )}
                     {item.downloaded_files.length > 0 && (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800 font-medium">
-                        {item.status === "confirmed" ? "已归档" : "已暂存"} {item.downloaded_files.length} 份文件
+                      <span className="rounded-full bg-[var(--md-sys-color-tertiary-container)] px-2 py-0.5 text-[var(--md-sys-color-on-tertiary-container)] font-medium">
+                        {item.status === "confirmed" ? "已归档" : "已暂存"} {item.downloaded_files.length} 份
                       </span>
                     )}
                   </div>
@@ -625,23 +773,28 @@ export function InboxTriage() {
           {/* Right Detail & Confirm */}
           {selectedItem && (
             <div ref={detailPanelRef} className="lg:col-span-7 lt-card p-6 space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)]/60 pb-4">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <TriageStatusBadge status={selectedItem.status} />
                     {selectedItem.auto_archived && (
-                      <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-800">
+                      <span className="rounded-full bg-[var(--md-sys-color-tertiary-container)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-tertiary-container)]">
                         规则自动归档
                       </span>
                     )}
-                    <span className="text-xs text-slate-600">
-                      #{selectedItem.id} · 来源 {selectedItem.sms_platform || "manual"}
+                    {isAutoCreatedCase && (
+                      <span className="rounded-full bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-secondary-container)]">
+                        已自动新建案件
+                      </span>
+                    )}
+                    <span className="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                      #{selectedItem.id} · {selectedItem.sms_sender || "手动上传"}
                     </span>
                   </div>
-                  <h2 className="mt-1.5 text-lg font-bold text-slate-900">
-                    {(selectedItem.extracted_payload?.case_number as string) ||
-                      (selectedItem.extracted_payload?.doc_title_hint as string) ||
-                      (selectedItem.item_type === "invoice_archive" ? "电子发票归档" : "待人工核对条目")}
+                  <h2 className="mt-1.5 text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+                    {(selectedPayload.case_number as string) ||
+                      (selectedPayload.doc_title_hint as string) ||
+                      (selectedItem.item_type === "invoice_archive" ? "电子发票归档" : "待确认事项")}
                   </h2>
                 </div>
                 {selectedItem.status !== "confirmed" && selectedItem.status !== "ignored" && (
@@ -657,33 +810,40 @@ export function InboxTriage() {
                 )}
               </div>
 
-              {selectedItem.triage_reason && selectedItem.status === "pending" && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900 flex items-start gap-2">
-                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
-                  <div>
-                    <span className="font-semibold">人工确认原因：</span>
-                    <span>{selectedItem.triage_reason}</span>
+              {selectedItem.triage_reason &&
+                (selectedItem.status === "pending" || selectedItem.status === "manual") && (
+                  <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[#f6d48b] bg-[#fef1d6] px-3.5 py-2.5 text-xs text-[#7a4b00] flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <span className="font-semibold">人工处理原因：</span>
+                      <span>{selectedItem.triage_reason}</span>
+                    </div>
                   </div>
+                )}
+
+              {relatedCaseHint && (
+                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-primary-container)]/40 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]">
+                  {relatedCaseHint}
                 </div>
               )}
 
               {selectedItem.sms_content && (
-                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3.5 space-y-1.5">
-                  <p className="text-xs font-semibold text-slate-600">
+                <div className="lt-surface-tonal p-3.5 space-y-1.5">
+                  <p className="text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
                     原始短信内容（发件号码：{selectedItem.sms_sender || "-"}）
                   </p>
-                  <p className="text-xs text-slate-800 whitespace-pre-wrap break-all leading-relaxed">
+                  <p className="text-xs text-[var(--md-sys-color-on-surface)] whitespace-pre-wrap break-all leading-relaxed">
                     {selectedItem.sms_content}
                   </p>
                 </div>
               )}
 
               {selectedItem.error_or_manual_reason && (
-                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3.5 space-y-3">
-                  <div className="flex items-start gap-2 text-xs text-rose-900">
-                    <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-error)]/30 bg-[var(--md-sys-color-error-container)]/60 p-3.5 space-y-3">
+                  <div className="flex items-start gap-2 text-xs text-[var(--md-sys-color-on-error-container)]">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
                     <div>
-                      <p className="font-semibold">需要人工验证或手动取回：</p>
+                      <p className="font-semibold">需补充验证信息或人工打开链接取回：</p>
                       <p className="mt-0.5">{selectedItem.error_or_manual_reason}</p>
                     </div>
                   </div>
@@ -701,8 +861,8 @@ export function InboxTriage() {
                         maxLength={4}
                         value={retryPhoneLast4}
                         onChange={(e) => setRetryPhoneLast4(e.target.value)}
-                        placeholder="手机尾号4位(如8966)"
-                        className="rounded border border-rose-300 bg-white px-2.5 py-1.5 text-xs"
+                        placeholder="手机尾号4位"
+                        className="lt-input text-xs py-1.5"
                       />
                       <input
                         type="text"
@@ -710,24 +870,24 @@ export function InboxTriage() {
                         maxLength={4}
                         value={retryIdLast4}
                         onChange={(e) => setRetryIdLast4(e.target.value)}
-                        placeholder="证件尾号4位(可选)"
-                        className="rounded border border-rose-300 bg-white px-2.5 py-1.5 text-xs"
+                        placeholder="证件尾号4位（可选）"
+                        className="lt-input text-xs py-1.5"
                       />
                       <input
                         type="text"
                         aria-label="短信提取码"
                         value={retryCode}
                         onChange={(e) => setRetryCode(e.target.value)}
-                        placeholder="短信提取码(可选)"
-                        className="rounded border border-rose-300 bg-white px-2.5 py-1.5 text-xs"
+                        placeholder="提取码（可选）"
+                        className="lt-input text-xs py-1.5"
                       />
                       <button
                         type="submit"
                         disabled={retryMut.isPending}
-                        className="inline-flex items-center justify-center gap-1 rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"
+                        className="lt-btn-danger py-1.5 px-3"
                       >
                         <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>{retryMut.isPending ? "验证中..." : "带尾号重试取回"}</span>
+                        <span>{retryMut.isPending ? "取回中..." : "补充重试"}</span>
                       </button>
                     </form>
                   )}
@@ -736,8 +896,8 @@ export function InboxTriage() {
 
               {selectedItem.downloaded_files.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-xs font-semibold text-slate-700">
-                    {selectedItem.status === "confirmed" ? "已归档文件" : "已暂存文件（支持预览核对）"}
+                  <p className="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+                    {selectedItem.status === "confirmed" ? "已归档文件" : "已暂存文件"}
                   </p>
                   <ul className="space-y-1.5">
                     {selectedItem.downloaded_files.map((fp) => {
@@ -745,19 +905,21 @@ export function InboxTriage() {
                       return (
                         <li
                           key={fp}
-                          className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700"
+                          className="flex items-center justify-between gap-2 rounded-[var(--md-sys-shape-corner-sm)] border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 text-xs text-[var(--md-sys-color-on-surface)]"
                         >
                           <div className="flex items-center gap-2 min-w-0">
-                            <FileText className="h-3.5 w-3.5 text-blue-700 shrink-0" aria-hidden="true" />
-                            <span className="truncate font-mono">{fp}</span>
+                            <FileText className="h-3.5 w-3.5 text-[var(--md-sys-color-primary)] shrink-0" aria-hidden="true" />
+                            <span className="truncate font-medium">{fname}</span>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <button
                               type="button"
                               onClick={() =>
-                                void inboxApi.downloadFile(selectedItem.id, fp, fname, true).catch((err: Error) => setErrorMsg(err.message))
+                                void inboxApi
+                                  .downloadFile(selectedItem.id, fp, fname, true)
+                                  .catch((err: Error) => setErrorMsg(err.message))
                               }
-                              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-blue-50"
+                              className="lt-btn-secondary py-1 px-2.5 text-[11px]"
                             >
                               <Eye className="h-3 w-3" aria-hidden="true" />
                               <span>预览</span>
@@ -765,9 +927,11 @@ export function InboxTriage() {
                             <button
                               type="button"
                               onClick={() =>
-                                void inboxApi.downloadFile(selectedItem.id, fp, fname, false).catch((err: Error) => setErrorMsg(err.message))
+                                void inboxApi
+                                  .downloadFile(selectedItem.id, fp, fname, false)
+                                  .catch((err: Error) => setErrorMsg(err.message))
                               }
-                              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                              className="lt-btn-secondary py-1 px-2.5 text-[11px]"
                             >
                               <Download className="h-3 w-3" aria-hidden="true" />
                               <span>下载</span>
@@ -781,22 +945,20 @@ export function InboxTriage() {
               )}
 
               {selectedItem.status === "confirmed" ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900 space-y-2.5">
+                <div className="lt-alert-success p-4 text-xs space-y-2.5">
                   <p className="font-semibold flex items-center gap-1.5">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
                     <span>
-                      {selectedItem.auto_archived ? "已按规则自动归档" : "已完成入案确认"}（
+                      {selectedItem.auto_archived ? "已自动归档" : "已确认归档"}（
                       {formatShanghaiDateTime(selectedItem.confirmed_at)}）
                     </span>
                   </p>
-                  {selectedItem.triage_reason && (
-                    <p className="text-emerald-800">{selectedItem.triage_reason}</p>
-                  )}
+                  {selectedItem.triage_reason && <p>{selectedItem.triage_reason}</p>}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
                     {selectedItem.matched_case_id && (
                       <Link
                         to={`/cases/${selectedItem.matched_case_id}`}
-                        className="inline-flex items-center font-semibold underline"
+                        className="lt-btn-accent py-1.5 px-3"
                       >
                         查看归档案件 →
                       </Link>
@@ -805,7 +967,7 @@ export function InboxTriage() {
                       type="button"
                       disabled={reopenMut.isPending}
                       onClick={() => reopenMut.mutate(selectedItem.id)}
-                      className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-100"
+                      className="lt-btn-secondary py-1.5 px-3"
                     >
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                       <span>{reopenMut.isPending ? "撤回中..." : "撤回归档 / 改派案件"}</span>
@@ -813,11 +975,20 @@ export function InboxTriage() {
                   </div>
                 </div>
               ) : selectedItem.status === "ignored" ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700 flex items-center gap-2">
-                  <Ban className="h-4 w-4 text-slate-500 shrink-0" aria-hidden="true" />
-                  <span>
-                    {selectedItem.triage_reason || "该条记录已标记为忽略。"}
-                  </span>
+                <div className="lt-surface-tonal p-4 text-xs flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-[var(--md-sys-color-on-surface-variant)]">
+                    <Ban className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>{selectedItem.triage_reason || "该条记录已忽略。"}</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={reopenMut.isPending}
+                    onClick={() => reopenMut.mutate(selectedItem.id)}
+                    className="lt-btn-secondary py-1.5 px-3"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    <span>{reopenMut.isPending ? "恢复中..." : "恢复到待处理"}</span>
+                  </button>
                 </div>
               ) : (
                 <form
@@ -825,39 +996,27 @@ export function InboxTriage() {
                     e.preventDefault();
                     confirmMut.mutate();
                   }}
-                  className="space-y-4 border-t border-slate-100 pt-4"
+                  className="space-y-4 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-4"
                 >
-                  <div className="lt-segmented">
-                    <button
-                      type="button"
-                      onClick={() => setCaseMode("existing")}
-                      className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                        caseMode === "existing"
-                          ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                          : "text-[var(--md-sys-color-on-surface-variant)]"
-                      }`}
-                    >
-                      归入已有案件
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCaseMode("new")}
-                      className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                        caseMode === "new"
-                          ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                          : "text-[var(--md-sys-color-on-surface-variant)]"
-                      }`}
-                    >
-                      确认时同时新建案件
-                    </button>
-                  </div>
+                  <MdSegmentedButton<"existing" | "new">
+                    value={caseMode}
+                    onChange={(v) => {
+                      setCaseModeTouched(true);
+                      setCaseMode(v);
+                    }}
+                    ariaLabel="案件归属方式"
+                    options={[
+                      { value: "existing", label: "归入已有案件" },
+                      { value: "new", label: "确认时新建案件" },
+                    ]}
+                  />
 
                   {caseMode === "existing" ? (
                     <div className="space-y-2">
                       {ambiguousCases.length > 0 && (
-                        <div className="space-y-1">
-                          <span className="block text-[11px] font-semibold text-amber-800">
-                            候选同委托人/同案号案件（点击快捷选中）：
+                        <div className="space-y-1.5">
+                          <span className="block text-[11px] font-semibold text-[#7a4b00]">
+                            检测到多个同委托人/同案号案件，请点击选择：
                           </span>
                           <div className="flex flex-wrap gap-1.5">
                             {ambiguousCases.map((c) => (
@@ -865,11 +1024,7 @@ export function InboxTriage() {
                                 key={c.id}
                                 type="button"
                                 onClick={() => setTargetCaseId(String(c.id))}
-                                className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
-                                  targetCaseId === String(c.id)
-                                    ? "border-blue-600 bg-blue-50 text-blue-800"
-                                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                                }`}
+                                className={`lt-chip ${targetCaseId === String(c.id) ? "lt-chip-active" : ""}`}
                               >
                                 {c.case_title} {c.case_number ? `(${c.case_number})` : ""}
                               </button>
@@ -878,15 +1033,17 @@ export function InboxTriage() {
                         </div>
                       )}
                       <div>
-                        <label htmlFor="cf-case" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label
+                          htmlFor="cf-case"
+                          className="block text-xs font-semibold text-[var(--md-sys-color-on-surface)] mb-1"
+                        >
                           目标归档案件 *
                         </label>
-                        <select
+                        <MdSelect
                           id="cf-case"
                           required
                           value={targetCaseId}
                           onChange={(e) => setTargetCaseId(e.target.value)}
-                          className="lt-input"
                         >
                           <option value="">请选择案件...</option>
                           {(casesQuery.data ?? []).map((c) => (
@@ -894,13 +1051,13 @@ export function InboxTriage() {
                               {c.case_title} {c.case_number ? `(${c.case_number})` : ""}
                             </option>
                           ))}
-                        </select>
+                        </MdSelect>
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3.5">
+                    <div className="lt-surface-tonal grid grid-cols-1 sm:grid-cols-2 gap-3 p-4">
                       <div className="sm:col-span-2">
-                        <label htmlFor="cf-ntitle" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="cf-ntitle" className="block text-xs font-semibold mb-1">
                           新案件名称 *
                         </label>
                         <input
@@ -909,28 +1066,28 @@ export function InboxTriage() {
                           required
                           value={newCaseTitle}
                           onChange={(e) => setNewCaseTitle(e.target.value)}
-                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                          className="lt-input text-xs py-1.5"
                         />
                       </div>
                       <div>
-                        <label htmlFor="cf-ncat" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="cf-ncat" className="block text-xs font-semibold mb-1">
                           案件大类
                         </label>
-                        <select
+                        <MdSelect
                           id="cf-ncat"
                           value={newCaseCategory}
                           onChange={(e) => setNewCaseCategory(e.target.value as CaseCategory)}
-                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                          className="text-xs py-1.5"
                         >
                           {(Object.keys(CASE_CATEGORY_META) as CaseCategory[]).map((cat) => (
                             <option key={cat} value={cat}>
                               {CASE_CATEGORY_META[cat].label}
                             </option>
                           ))}
-                        </select>
+                        </MdSelect>
                       </div>
                       <div>
-                        <label htmlFor="cf-nnum" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="cf-nnum" className="block text-xs font-semibold mb-1">
                           案号
                         </label>
                         <input
@@ -938,11 +1095,11 @@ export function InboxTriage() {
                           type="text"
                           value={newCaseNumber}
                           onChange={(e) => setNewCaseNumber(e.target.value)}
-                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                          className="lt-input text-xs py-1.5"
                         />
                       </div>
                       <div>
-                        <label htmlFor="cf-nclient" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="cf-nclient" className="block text-xs font-semibold mb-1">
                           委托人 *
                         </label>
                         <input
@@ -951,211 +1108,288 @@ export function InboxTriage() {
                           required
                           value={newClientName}
                           onChange={(e) => setNewClientName(e.target.value)}
-                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                          className="lt-input text-xs py-1.5"
                         />
                       </div>
                       <div>
-                        <label htmlFor="cf-nvis" className="block text-xs font-semibold text-slate-700 mb-1">
+                        <label htmlFor="cf-nagency" className="block text-xs font-semibold mb-1">
+                          受理机关（法院/检察院/仲裁委）
+                        </label>
+                        <input
+                          id="cf-nagency"
+                          type="text"
+                          value={newAgency}
+                          onChange={(e) => setNewAgency(e.target.value)}
+                          placeholder="如 上海市第一中级人民法院"
+                          className="lt-input text-xs py-1.5"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="cf-nvis" className="block text-xs font-semibold mb-1">
                           可见性
                         </label>
-                        <select
+                        <MdSelect
                           id="cf-nvis"
                           value={newVisibility}
                           onChange={(e) => setNewVisibility(e.target.value as CaseVisibility)}
-                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                          className="text-xs py-1.5"
                         >
                           <option value="team">团队协同</option>
                           <option value="private">个人私密</option>
-                        </select>
+                        </MdSelect>
                       </div>
+                      {newCaseCategory === "criminal" && (
+                        <>
+                          <div>
+                            <label htmlFor="cf-ncrime" className="block text-xs font-semibold mb-1">
+                              案件情形（拘留计算适用）
+                            </label>
+                            <MdSelect
+                              id="cf-ncrime"
+                              value={newCrimeType}
+                              onChange={(e) => setNewCrimeType(e.target.value)}
+                              className="text-xs py-1.5"
+                            >
+                              {CRIME_TYPE_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </MdSelect>
+                          </div>
+                          <div>
+                            <label htmlFor="cf-ncharge" className="block text-xs font-semibold mb-1">
+                              涉嫌罪名
+                            </label>
+                            <input
+                              id="cf-ncharge"
+                              type="text"
+                              value={newChargeName}
+                              onChange={(e) => setNewChargeName(e.target.value)}
+                              placeholder="如 职务侵占罪"
+                              className="lt-input text-xs py-1.5"
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 
                   {selectedItem.item_type === "invoice_archive" ? (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-700">
+                    <div className="lt-surface-tonal px-3.5 py-2.5 text-xs">
                       <span className="font-semibold">默认归档目录：</span>
-                      <span className="font-mono">{fileSubfolder}</span>
-                      {Boolean(selectedItem.extracted_payload?.invoice_meta) && (
-                        <span className="ml-2 text-slate-600">
+                      <span>{fileSubfolder}</span>
+                      {Boolean(selectedPayload.invoice_meta) && (
+                        <span className="ml-2 text-[var(--md-sys-color-on-surface-variant)]">
                           · 金额{" "}
                           {String(
-                            (selectedItem.extracted_payload?.invoice_meta as Record<string, unknown>)
-                              ?.total_amount ?? "待核"
+                            (selectedPayload.invoice_meta as Record<string, unknown>)?.total_amount ??
+                              "待核"
                           )}{" "}
                           元
                         </span>
                       )}
                     </div>
                   ) : (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-700 space-y-1">
-                      <div>
-                        <span className="font-semibold">识别处理动作：</span>
-                        <span>
-                          {eventType ? `${getEventTypeLabel(eventType)}（${eventDate}）` : "仅归档至「01_司法与程序文书」"}
-                          {authorityDays ? ` · 指定 ${authorityDays} 日` : ""}
-                          {createHearing ? ` · 写入开庭日程 ${hearingStart.replace("T", " ")}` : ""}
-                        </span>
-                      </div>
+                    <div className="lt-surface-tonal px-3.5 py-2.5 text-xs">
+                      <span className="font-semibold">识别动作：</span>
+                      <span>
+                        {eventType
+                          ? `${getEventTypeLabel(eventType)}（${eventDate}）`
+                          : "仅归档至「01_司法与程序文书」"}
+                        {authorityDays ? ` · 指定 ${authorityDays} 日` : ""}
+                        {createHearing ? ` · 写入开庭日程 ${hearingStart.replace("T", " ")}` : ""}
+                      </span>
                     </div>
                   )}
 
-                  <details
-                    open={selectedItem.item_type !== "invoice_archive" && !eventType}
-                    className="rounded-lg border border-slate-200 bg-white"
-                  >
-                    <summary className="cursor-pointer select-none px-3.5 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                      高级选项（调整归档子目录 / 程序事件 / 阶段 / 开庭时间）
-                    </summary>
-                    <div className="space-y-3 border-t border-slate-100 p-3.5">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label htmlFor="cf-folder" className="block text-xs font-semibold text-slate-700 mb-1">
-                            文书归档目录
-                          </label>
-                          <select
-                            id="cf-folder"
-                            value={fileSubfolder}
-                            onChange={(e) => setFileSubfolder(e.target.value)}
-                            className="lt-input text-xs"
-                          >
-                            {STANDARD_CASE_SUBFOLDERS.map((sf) => (
-                              <option key={sf} value={sf}>
-                                {sf}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label htmlFor="cf-stage" className="block text-xs font-semibold text-slate-700 mb-1">
-                            同步推进阶段（可选）
-                          </label>
-                          <input
-                            id="cf-stage"
-                            list="cf-stage-list"
-                            value={newStage}
-                            onChange={(e) => setNewStage(e.target.value)}
-                            placeholder="留空则按事件自动推进"
-                            className="lt-input text-xs"
-                          />
-                          <datalist id="cf-stage-list">
-                            {stageSuggestions.map((sg) => (
-                              <option key={sg} value={sg} />
-                            ))}
-                          </datalist>
-                        </div>
-                      </div>
+                  <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)]">
+                    <button
+                      type="button"
+                      aria-expanded={advancedOpen}
+                      onClick={() => setAdvancedOpen((prev) => !prev)}
+                      className="flex w-full items-center justify-between px-3.5 py-2.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-low)]"
+                    >
+                      <span>调整归档目录 / 程序事件 / 开庭日程</span>
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+                        aria-hidden="true"
+                      />
+                    </button>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-slate-200 p-3">
-                        <div className="sm:col-span-2 text-xs font-semibold text-slate-700">
-                          触发程序事件并推算期限（留空则仅归档文件）
+                    {advancedOpen && (
+                      <div className="space-y-3 border-t border-[var(--md-sys-color-outline-variant)]/60 p-3.5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label htmlFor="cf-folder" className="block text-xs font-semibold mb-1">
+                              文书归档目录
+                            </label>
+                            <MdSelect
+                              id="cf-folder"
+                              value={fileSubfolder}
+                              onChange={(e) => setFileSubfolder(e.target.value)}
+                              className="text-xs py-1.5"
+                            >
+                              {STANDARD_CASE_SUBFOLDERS.map((sf) => (
+                                <option key={sf} value={sf}>
+                                  {sf}
+                                </option>
+                              ))}
+                            </MdSelect>
+                          </div>
+                          <div>
+                            <label htmlFor="cf-stage" className="block text-xs font-semibold mb-1">
+                              同步推进阶段（可选）
+                            </label>
+                            <MdSelect
+                              id="cf-stage"
+                              value={newStage}
+                              onChange={(e) => setNewStage(e.target.value)}
+                              className="text-xs py-1.5"
+                            >
+                              <option value="">不手动指定（由程序自动判断）</option>
+                              {stageSuggestions.map((sg) => (
+                                <option key={sg} value={sg}>
+                                  {sg}
+                                </option>
+                              ))}
+                            </MdSelect>
+                          </div>
                         </div>
-                        <div>
-                          <label htmlFor="cf-evtype" className="block text-[11px] text-slate-600 mb-1">
-                            事件标识（可选预设）
-                          </label>
-                          <input
-                            id="cf-evtype"
-                            list="cf-ev-presets"
-                            value={eventType}
-                            onChange={(e) => setEventType(e.target.value)}
-                            placeholder="如 judgment_served"
-                            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs font-mono"
-                          />
-                          <datalist id="cf-ev-presets">
-                            {EVENT_TYPE_PRESETS.map((p) => (
-                              <option key={p.value} value={p.value}>
-                                {p.label}
-                              </option>
-                            ))}
-                          </datalist>
-                        </div>
-                        <div>
-                          <label htmlFor="cf-evdate" className="block text-[11px] text-slate-600 mb-1">
-                            送达日期
-                          </label>
-                          <input
-                            id="cf-evdate"
-                            type="date"
-                            value={eventDate}
-                            onChange={(e) => setEventDate(e.target.value)}
-                            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor="cf-evmethod" className="block text-[11px] text-slate-600 mb-1">
-                            送达方式
-                          </label>
-                          <select
-                            id="cf-evmethod"
-                            value={serviceMethod}
-                            onChange={(e) => setServiceMethod(e.target.value)}
-                            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                          >
-                            {SERVICE_METHOD_OPTIONS.map((m) => (
-                              <option key={m.value} value={m.value}>
-                                {m.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label htmlFor="cf-evdays" className="block text-[11px] text-slate-600 mb-1">
-                            指定期限天数（可选）
-                          </label>
-                          <input
-                            id="cf-evdays"
-                            type="number"
-                            min={1}
-                            value={authorityDays}
-                            onChange={(e) => setAuthorityDays(e.target.value)}
-                            placeholder="如 15"
-                            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                          />
-                        </div>
-                      </div>
 
-                      <div className="rounded-lg border border-slate-200 p-3 space-y-2">
-                        <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={createHearing}
-                            onChange={(e) => setCreateHearing(e.target.checked)}
-                          />
-                          <span>同时写入正式开庭 / 听证日程</span>
-                        </label>
-                        {createHearing && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        <div className="lt-surface-tonal grid grid-cols-1 sm:grid-cols-2 gap-3 p-3">
+                          <div className="sm:col-span-2 text-xs font-semibold">
+                            触发程序事件与计算期限（选填）
+                          </div>
+                          <div>
+                            <label htmlFor="cf-evtype" className="block text-[11px] mb-1">
+                              程序事件类型
+                            </label>
+                            <MdSelect
+                              id="cf-evtype"
+                              value={eventType}
+                              onChange={(e) => setEventType(e.target.value)}
+                              className="text-xs py-1.5"
+                            >
+                              <option value="">仅归档文件，不创建程序事件</option>
+                              {filteredEventPresets.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </MdSelect>
+                          </div>
+                          <div>
+                            <label htmlFor="cf-evdate" className="block text-[11px] mb-1">
+                              送达/起算日期
+                            </label>
                             <input
-                              type="text"
-                              value={hearingTitle}
-                              onChange={(e) => setHearingTitle(e.target.value)}
-                              placeholder="开庭标题"
-                              className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                            />
-                            <input
-                              type="text"
-                              value={hearingLoc}
-                              onChange={(e) => setHearingLoc(e.target.value)}
-                              placeholder="法庭地点"
-                              className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                            />
-                            <input
-                              type="datetime-local"
-                              value={hearingStart}
-                              onChange={(e) => setHearingStart(e.target.value)}
-                              className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                            />
-                            <input
-                              type="datetime-local"
-                              value={hearingEnd}
-                              onChange={(e) => setHearingEnd(e.target.value)}
-                              className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                              id="cf-evdate"
+                              type="date"
+                              value={eventDate}
+                              onChange={(e) => setEventDate(e.target.value)}
+                              className="lt-input text-xs py-1.5"
                             />
                           </div>
-                        )}
+                          <div>
+                            <label htmlFor="cf-evmethod" className="block text-[11px] mb-1">
+                              送达方式
+                            </label>
+                            <MdSelect
+                              id="cf-evmethod"
+                              value={serviceMethod}
+                              onChange={(e) => setServiceMethod(e.target.value)}
+                              className="text-xs py-1.5"
+                            >
+                              {SERVICE_METHOD_OPTIONS.map((m) => (
+                                <option key={m.value} value={m.value}>
+                                  {m.label}
+                                </option>
+                              ))}
+                            </MdSelect>
+                          </div>
+                          {eventType === "evidence_notice_served" && (
+                            <div>
+                              <label htmlFor="cf-evdays" className="block text-[11px] mb-1">
+                                法院指定举证天数
+                              </label>
+                              <input
+                                id="cf-evdays"
+                                type="number"
+                                min={1}
+                                value={authorityDays}
+                                onChange={(e) => setAuthorityDays(e.target.value)}
+                                placeholder="如 15"
+                                className="lt-input text-xs py-1.5"
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="lt-surface-tonal p-3 space-y-2.5">
+                          <MdCheckbox
+                            checked={createHearing}
+                            onChange={setCreateHearing}
+                            label={<span className="text-xs font-semibold">同时写入开庭 / 听证日程</span>}
+                          />
+                          {createHearing && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                              <div>
+                                <label htmlFor="cf-htitle" className="block text-[11px] mb-1">
+                                  日程标题
+                                </label>
+                                <input
+                                  id="cf-htitle"
+                                  type="text"
+                                  value={hearingTitle}
+                                  onChange={(e) => setHearingTitle(e.target.value)}
+                                  placeholder="如 第一次开庭审理"
+                                  className="lt-input text-xs py-1.5"
+                                />
+                              </div>
+                              <div>
+                                <label htmlFor="cf-hloc" className="block text-[11px] mb-1">
+                                  法庭/会议地点
+                                </label>
+                                <input
+                                  id="cf-hloc"
+                                  type="text"
+                                  value={hearingLoc}
+                                  onChange={(e) => setHearingLoc(e.target.value)}
+                                  placeholder="如 第一法庭"
+                                  className="lt-input text-xs py-1.5"
+                                />
+                              </div>
+                              <div>
+                                <label htmlFor="cf-hstart" className="block text-[11px] mb-1">
+                                  开始时间（北京时间）
+                                </label>
+                                <input
+                                  id="cf-hstart"
+                                  type="datetime-local"
+                                  value={hearingStart}
+                                  onChange={(e) => setHearingStart(e.target.value)}
+                                  className="lt-input text-xs py-1.5"
+                                />
+                              </div>
+                              <div>
+                                <label htmlFor="cf-hend" className="block text-[11px] mb-1">
+                                  结束时间（北京时间）
+                                </label>
+                                <input
+                                  id="cf-hend"
+                                  type="datetime-local"
+                                  value={hearingEnd}
+                                  onChange={(e) => setHearingEnd(e.target.value)}
+                                  className="lt-input text-xs py-1.5"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </details>
+                    )}
+                  </div>
 
                   <button
                     type="submit"
@@ -1178,12 +1412,66 @@ export function InboxTriage() {
         </div>
       )}
 
-      {/* Simulate SMS Modal */}
+      {/* Auto-Triage Policy Settings Modal */}
       <ModalDialog
-        open={simOpen}
-        onClose={() => setSimOpen(false)}
-        title="模拟司法 / 发票短信接入"
+        open={policyOpen}
+        onClose={() => setPolicyOpen(false)}
+        title="自动分拣与归档策略"
+        subtitle="命中案号及规则且无歧义时按下方策略处理"
       >
+        <div className="space-y-3">
+          {policiesQuery.isLoading ? (
+            <p className="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
+              正在加载规则开关...
+            </p>
+          ) : (
+            <div className="divide-y divide-[var(--md-sys-color-outline-variant)]/60">
+              {(policiesQuery.data ?? []).map((policy: AutoTriagePolicy) => {
+                const isAuto = policy.mode === "auto_archive";
+                return (
+                  <div key={policy.policy_key} className="py-3.5 first:pt-0 last:pb-0">
+                    <MdSwitch
+                      checked={isAuto}
+                      disabled={user?.system_role !== "admin" || updatePolicyMut.isPending}
+                      onChange={(checked) =>
+                        updatePolicyMut.mutate({
+                          key: policy.policy_key,
+                          mode: checked ? "auto_archive" : "require_confirm",
+                        })
+                      }
+                      label={policy.label}
+                      description={
+                        isAuto
+                          ? `当前：自动识别归档 · ${policy.description}`
+                          : `当前：暂停待人工确认 · ${policy.description}`
+                      }
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {user?.system_role !== "admin" && (
+            <p className="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              注：仅合伙人/管理员可调整全所分拣策略，当前为只读查看模式。
+            </p>
+          )}
+        </div>
+      </ModalDialog>
+
+      {/* Batch Ignore Confirm Dialog */}
+      <ConfirmDialog
+        open={batchIgnoreConfirmOpen}
+        onClose={() => setBatchIgnoreConfirmOpen(false)}
+        onConfirm={() => batchIgnoreMut.mutate(needsActionIds)}
+        loading={batchIgnoreMut.isPending}
+        title="批量忽略待处理记录"
+        description={`将当前队列中的 ${needsActionIds.length} 条待处理记录统一标记为已忽略，后续仍可在「已忽略」分类中恢复。确定继续吗？`}
+        confirmLabel="确认批量忽略"
+      />
+
+      {/* Simulate SMS Modal */}
+      <ModalDialog open={simOpen} onClose={() => setSimOpen(false)} title="模拟司法 / 发票短信接入">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1198,7 +1486,7 @@ export function InboxTriage() {
           )}
 
           <div className="space-y-1.5">
-            <span className="block text-xs font-semibold text-slate-700">选择短信样本：</span>
+            <span className="block text-xs font-semibold">选择短信样本：</span>
             <div className="flex flex-wrap gap-1.5">
               {SMS_PRESETS.map((p) => (
                 <button
@@ -1208,7 +1496,7 @@ export function InboxTriage() {
                     setSimContent(p.content);
                     setSimSender(p.sender);
                   }}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-blue-50 hover:border-blue-300"
+                  className="lt-chip py-1 px-2.5 text-[11px]"
                 >
                   {p.label}
                 </button>
@@ -1217,7 +1505,7 @@ export function InboxTriage() {
           </div>
 
           <div>
-            <label htmlFor="sim-sender" className="block text-xs font-semibold text-slate-700 mb-1">
+            <label htmlFor="sim-sender" className="block text-xs font-semibold mb-1">
               发件号码
             </label>
             <input
@@ -1230,14 +1518,13 @@ export function InboxTriage() {
           </div>
 
           <div>
-            <label htmlFor="sim-content" className="block text-xs font-semibold text-slate-700 mb-1">
+            <label htmlFor="sim-content" className="block text-xs font-semibold mb-1">
               短信正文 *
             </label>
             <textarea
               id="sim-content"
               rows={4}
               required
-              autoFocus
               value={simContent}
               onChange={(e) => setSimContent(e.target.value)}
               className="lt-input font-mono text-xs"
@@ -1246,27 +1533,26 @@ export function InboxTriage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
             <div>
-              <label htmlFor="sim-phone4" className="block text-xs font-semibold text-slate-700 mb-1">
-                手机号后4位（送达校验用，可选）
+              <label htmlFor="sim-phone4" className="block text-xs font-semibold mb-1">
+                手机号后4位（送达验证用）
               </label>
               <input
                 id="sim-phone4"
                 type="text"
                 maxLength={4}
                 value={simPhoneLast4}
-                onChange={(e) => setSimPhoneLast4(e.target.value)}
+                onChange={(e) => setSimPhoneLast4(e.target.value.replace(/\D/g, ""))}
                 placeholder="例如 8966"
                 className="lt-input"
               />
             </div>
-            <label className="inline-flex items-center gap-2 text-xs text-slate-700 sm:pt-5 cursor-pointer">
-              <input
-                type="checkbox"
+            <div className="sm:pt-5">
+              <MdCheckbox
                 checked={simAutoFetch}
-                onChange={(e) => setSimAutoFetch(e.target.checked)}
+                onChange={setSimAutoFetch}
+                label="自动尝试取回送达文书"
               />
-              <span>自动尝试抓取送达文书</span>
-            </label>
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -1285,8 +1571,7 @@ export function InboxTriage() {
       <ModalDialog
         open={uploadOpen}
         onClose={() => setUploadOpen(false)}
-        title="手动上传文书 PDF 或电子发票"
-        subtitle="自动提取 PDF 文本中的案号、开庭时间或发票金额与抬头"
+        title="手动上传文书或电子发票"
       >
         <form
           onSubmit={(e) => {
@@ -1301,36 +1586,25 @@ export function InboxTriage() {
             </div>
           )}
 
-          <div className="flex flex-wrap gap-4">
-            <label className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
-              <input
-                type="radio"
-                name="up-kind"
-                checked={uploadType === "judicial_stage_and_doc"}
-                onChange={() => setUploadType("judicial_stage_and_doc")}
-              />
-              <span>司法送达文书 PDF</span>
-            </label>
-            <label className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
-              <input
-                type="radio"
-                name="up-kind"
-                checked={uploadType === "invoice_archive"}
-                onChange={() => setUploadType("invoice_archive")}
-              />
-              <span>电子发票（自动识别金额重命名）</span>
-            </label>
-          </div>
+          <MdRadioGroup<"judicial_stage_and_doc" | "invoice_archive">
+            value={uploadType}
+            onChange={setUploadType}
+            columns={2}
+            ariaLabel="上传文件类型"
+            options={[
+              { value: "judicial_stage_and_doc", label: "司法送达文书", badge: "PDF/Word" },
+              { value: "invoice_archive", label: "电子发票", badge: "PDF/OFD/XML" },
+            ]}
+          />
 
           <div>
-            <label htmlFor="m-up-case" className="block text-xs font-semibold text-slate-700 mb-1">
-              预关联案件（可选，留空自动按案号匹配）
+            <label htmlFor="m-up-case" className="block text-xs font-semibold mb-1">
+              预关联案件（可选，留空自动按文件内案号匹配）
             </label>
-            <select
+            <MdSelect
               id="m-up-case"
               value={uploadCaseId}
               onChange={(e) => setUploadCaseId(e.target.value)}
-              className="lt-input"
             >
               <option value="">自动识别匹配</option>
               {(casesQuery.data ?? []).map((c) => (
@@ -1338,24 +1612,20 @@ export function InboxTriage() {
                   {c.case_title} {c.case_number ? `(${c.case_number})` : ""}
                 </option>
               ))}
-            </select>
+            </MdSelect>
           </div>
 
+          <MdFileDropzone
+            files={uploadFiles}
+            onFilesChange={setUploadFiles}
+            multiple
+            accept=".pdf,.ofd,.xml,.doc,.docx,.jpg,.jpeg,.png"
+            label="点击或拖拽文书/发票到此上传"
+            hint="支持批量选择 PDF、OFD、XML、图片或 Word"
+          />
+
           <div>
-            <label htmlFor="m-up-files" className="block text-xs font-semibold text-slate-700 mb-1">
-              选择文件 *
-            </label>
-            <input
-              id="m-up-files"
-              type="file"
-              multiple
-              required
-              onChange={(e) => setUploadFiles(Array.from(e.target.files ?? []))}
-              className="w-full text-xs text-slate-700"
-            />
-          </div>
-          <div>
-            <label htmlFor="m-up-notes" className="block text-xs font-semibold text-slate-700 mb-1">
+            <label htmlFor="m-up-notes" className="block text-xs font-semibold mb-1">
               备注 / 案号提示
             </label>
             <input
@@ -1366,6 +1636,13 @@ export function InboxTriage() {
               className="lt-input"
             />
           </div>
+
+          <MdCheckbox
+            checked={uploadAutoArchive}
+            onChange={setUploadAutoArchive}
+            label="识别出唯一案件且命中规则时直接自动归档"
+          />
+
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setUploadOpen(false)} className="lt-btn-secondary">
               取消
@@ -1376,7 +1653,7 @@ export function InboxTriage() {
               className="lt-btn-primary"
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{manualUploadMut.isPending ? "上传解析中..." : "上传进入分拣队列"}</span>
+              <span>{manualUploadMut.isPending ? "解析中..." : "上传进入分拣队列"}</span>
             </button>
           </div>
         </form>

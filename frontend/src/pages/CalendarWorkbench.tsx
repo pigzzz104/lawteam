@@ -21,10 +21,17 @@ import {
   RefreshCw,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
 import { authApi, calendarApi, casesApi, inboxApi, remindersApi, usersApi } from "@/api/client";
 import { ModalDialog } from "@/components/ModalDialog";
 import { CategoryBadge, RiskBadge } from "@/components/StatusBadges";
+import {
+  ConfirmDialog,
+  MdCheckbox,
+  MdSegmentedButton,
+  MdSelect,
+} from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
 import {
   CASE_CATEGORY_META,
@@ -33,11 +40,13 @@ import {
   SCHEDULE_CATEGORY_LABELS,
   copyTextSafely,
   formatShanghaiDateTime,
+  toShanghaiIsoWithOffset,
   todayShanghaiIso,
 } from "@/lib/domain";
 import type {
   CalendarEventItem,
   CaseCategory,
+  InboxTriageRead,
   NotifyTargetType,
   RiskLevel,
 } from "@/types/api";
@@ -67,6 +76,7 @@ export function CalendarWorkbench() {
   }, []);
 
   const [scope, setScope] = useState<"my" | "team">("my");
+  const [icsScope, setIcsScope] = useState<"my" | "team">("my");
   const [categoryFilter, setCategoryFilter] = useState<CaseCategory | "">("");
   const [lawyerFilterId, setLawyerFilterId] = useState<number | null>(null);
   const [includeCompleted, setIncludeCompleted] = useState(false);
@@ -75,9 +85,13 @@ export function CalendarWorkbench() {
 
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventItem | null>(null);
   const [icsModalOpen, setIcsModalOpen] = useState(false);
+  const [icsMsg, setIcsMsg] = useState<string | null>(null);
+  const [icsErr, setIcsErr] = useState<string | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createKind, setCreateKind] = useState<"schedule" | "deadline">("schedule");
   const [copiedIcs, setCopiedIcs] = useState(false);
+  const [deleteScheduleTarget, setDeleteScheduleTarget] = useState<CalendarEventItem | null>(null);
+
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -139,24 +153,29 @@ export function CalendarWorkbench() {
 
   const activeDeadline = useMemo(() => {
     if (!selectedEvent || selectedEvent.source_type !== "deadline") return null;
-    return (
-      deadlineDetailQuery.data?.deadlines.find((d) => d.id === selectedEvent.record_id) ?? null
-    );
+    return deadlineDetailQuery.data?.deadlines.find((d) => d.id === selectedEvent.record_id) ?? null;
   }, [deadlineDetailQuery.data, selectedEvent]);
 
+  useEffect(() => {
+    if (!activeDeadline) return;
+    setNotifyTargetType(activeDeadline.notify_target_type);
+    setEscalateSupervisor(activeDeadline.escalate_to_supervisor);
+    setOverrideDate(activeDeadline.due_date);
+  }, [activeDeadline]);
+
   const ownerPills = useMemo(() => {
+    if (scope !== "team") return [];
     const map = new Map<number, { id: number; name: string; color: string }>();
-    if (scope === "team") {
-      for (const u of usersQuery.data ?? []) {
-        map.set(u.id, { id: u.id, name: u.full_name, color: u.calendar_color || "#2563eb" });
-      }
+    for (const u of usersQuery.data ?? []) {
+      if (!u.is_active) continue;
+      map.set(u.id, { id: u.id, name: u.full_name, color: u.calendar_color || "#1b56b3" });
     }
     for (const ev of calendarQuery.data?.items ?? []) {
       if (ev.owner_id && ev.owner_name && !map.has(ev.owner_id)) {
         map.set(ev.owner_id, {
           id: ev.owner_id,
           name: ev.owner_name,
-          color: ev.color || "#3b82f6",
+          color: ev.color || "#1b56b3",
         });
       }
     }
@@ -169,12 +188,6 @@ export function CalendarWorkbench() {
     return items.filter((item) => item.owner_id === lawyerFilterId);
   }, [calendarQuery.data?.items, lawyerFilterId]);
 
-  useEffect(() => {
-    if (selectedEvent && !filteredItems.some((item) => item.id === selectedEvent.id)) {
-      setSelectedEvent(null);
-    }
-  }, [filteredItems, selectedEvent]);
-
   const fcEvents = useMemo(
     () =>
       filteredItems.map((ev) => ({
@@ -183,9 +196,9 @@ export function CalendarWorkbench() {
         start: ev.start,
         end: ev.end,
         allDay: ev.all_day,
-        backgroundColor: ev.is_tentative ? "#f1f5f9" : ev.color,
-        borderColor: ev.is_tentative ? "#64748b" : ev.color,
-        textColor: ev.is_tentative ? "#334155" : "#ffffff",
+        backgroundColor: ev.is_tentative ? "#eff3f9" : ev.color,
+        borderColor: ev.is_tentative ? "#6c7484" : ev.color,
+        textColor: ev.is_tentative ? "#181c23" : "#ffffff",
         classNames: [
           ev.is_tentative ? "fc-event-tentative" : "",
           ev.is_completed ? "fc-event-completed" : "",
@@ -205,28 +218,57 @@ export function CalendarWorkbench() {
   const quickConfirmTriageMut = useMutation({
     mutationFn: async (ev: CalendarEventItem) => {
       if (!ev.case_id) throw new Error("未关联案件，请前往收件箱选择案件后确认");
+      const triageItems: InboxTriageRead[] = await queryClient.fetchQuery({
+        queryKey: ["inbox", "items"],
+        queryFn: () => inboxApi.list({ limit: 500 }),
+      });
+      const triage = triageItems.find((it) => it.id === ev.record_id);
+      const p = triage?.extracted_payload ?? {};
       const cleanTitle = ev.title.replace(/^\[待确认\]\s*/, "").trim() || "开庭审理";
+      const extractedEventType =
+        typeof p.event_type_guess === "string" && p.event_type_guess.trim()
+          ? p.event_type_guess.trim()
+          : ev.all_day
+            ? null
+            : null;
+      const extractedEventDate =
+        typeof p.event_date === "string" && /^\d{4}-\d{2}-\d{2}/.test(p.event_date)
+          ? p.event_date.slice(0, 10)
+          : extractedEventType
+            ? ev.start.slice(0, 10)
+            : null;
+      const hasHearing = Boolean(p.hearing_time) || !ev.all_day;
+
       return inboxApi.confirm(ev.record_id, {
         case_id: ev.case_id,
-        event_type: ev.all_day ? null : "hearing_scheduled",
-        event_date: ev.all_day ? null : ev.start.slice(0, 10),
-        create_hearing: ev.all_day
-          ? null
-          : {
+        event_type: extractedEventType,
+        event_date: extractedEventDate,
+        authority_specified_days:
+          typeof p.authority_specified_days === "number" ? p.authority_specified_days : null,
+        new_stage:
+          (typeof p.suggested_stage === "string" && p.suggested_stage) ||
+          (typeof p.stage_suggestion === "string" && p.stage_suggestion) ||
+          null,
+        create_hearing: hasHearing
+          ? {
               category: "hearing",
               title: cleanTitle,
               start_time: ev.start,
               end_time: ev.end,
-              location: ev.location || null,
+              location:
+                (typeof p.hearing_location === "string" && p.hearing_location) ||
+                ev.location ||
+                null,
               risk_level: ev.risk_level,
-            },
+            }
+          : null,
       });
     },
     onSuccess: (res) => {
       invalidateAllCalendar();
       setSelectedEvent(null);
       setErrorMsg(null);
-      setActionMsg(`已就地确认入案 #${res.case_id}，并同步日历`);
+      setActionMsg(`已就地确认入案（派生 ${res.generated_deadline_count} 条期限），并同步日历`);
     },
     onError: (err: Error) => {
       setActionMsg(null);
@@ -321,11 +363,13 @@ export function CalendarWorkbench() {
     mutationFn: (scheduleId: number) => calendarApi.deleteSchedule(scheduleId),
     onSuccess: () => {
       invalidateAllCalendar();
+      setDeleteScheduleTarget(null);
       setSelectedEvent(null);
       setErrorMsg(null);
       setActionMsg("日程已删除");
     },
     onError: (err: Error) => {
+      setDeleteScheduleTarget(null);
       setActionMsg(null);
       setErrorMsg(err.message);
     },
@@ -334,8 +378,10 @@ export function CalendarWorkbench() {
   const createItemMut = useMutation({
     mutationFn: async () => {
       if (createKind === "schedule") {
-        const startMs = new Date(newStartDt).getTime();
-        const endMs = new Date(newEndDt).getTime();
+        const startIso = toShanghaiIsoWithOffset(newStartDt);
+        const endIso = toShanghaiIsoWithOffset(newEndDt);
+        const startMs = new Date(startIso).getTime();
+        const endMs = new Date(endIso).getTime();
         if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
           throw new Error("日程结束时间必须晚于开始时间");
         }
@@ -343,8 +389,8 @@ export function CalendarWorkbench() {
           case_id: newCaseId ? Number(newCaseId) : null,
           category: newSchedCat,
           title: newTitle.trim(),
-          start_time: new Date(startMs).toISOString(),
-          end_time: new Date(endMs).toISOString(),
+          start_time: startIso,
+          end_time: endIso,
           location: newLocation.trim() || null,
           risk_level: newRiskLevel,
         });
@@ -378,12 +424,12 @@ export function CalendarWorkbench() {
     mutationFn: () => authApi.updateMe({ rotate_ics_token: true }),
     onSuccess: async () => {
       await refreshUser();
-      setErrorMsg(null);
-      setActionMsg("已重置日历订阅 Token");
+      setIcsErr(null);
+      setIcsMsg("已更换订阅链接，请重新复制并添加到日历订阅");
     },
     onError: (err: Error) => {
-      setActionMsg(null);
-      setErrorMsg(err.message);
+      setIcsMsg(null);
+      setIcsErr(err.message);
     },
   });
 
@@ -394,6 +440,7 @@ export function CalendarWorkbench() {
     setErrorMsg(null);
     setOverrideDate(ev.due_date || ev.start.slice(0, 10));
     setOverrideReason("");
+    setPersonalAlertAt("");
     if (window.innerWidth < 1280) {
       window.setTimeout(() => {
         detailAsideRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -404,9 +451,7 @@ export function CalendarWorkbench() {
   const handleDatesSet = (arg: DatesSetArg) => {
     const start = arg.startStr.slice(0, 10);
     const end = arg.endStr.slice(0, 10);
-    setVisibleRange((prev) =>
-      prev?.start === start && prev?.end === end ? prev : { start, end }
-    );
+    setVisibleRange((prev) => (prev?.start === start && prev?.end === end ? prev : { start, end }));
   };
 
   const openCreateModal = () => {
@@ -426,56 +471,60 @@ export function CalendarWorkbench() {
   };
 
   const icsUrl = user
-    ? `${window.location.origin}/api/calendar/ics/${user.ics_feed_token}.ics?scope=${scope}`
+    ? `${window.location.origin}/api/calendar/ics/${user.ics_feed_token}.ics?scope=${icsScope}`
     : "";
 
   const copyIcsUrl = async () => {
     if (!icsUrl) return;
     const ok = await copyTextSafely(icsUrl);
     if (!ok) {
-      setErrorMsg("浏览器剪贴板写入受限，请手动选择复制");
+      setIcsMsg(null);
+      setIcsErr("剪贴板权限受限，请手动选中复制");
       return;
     }
+    setIcsErr(null);
     setCopiedIcs(true);
     window.setTimeout(() => setCopiedIcs(false), 2000);
   };
+
+  const ownPersonalAlerts = useMemo(() => {
+    if (!activeDeadline || !user) return [];
+    return (activeDeadline.personal_custom_alerts ?? []).filter((a) => a.user_id === user.id);
+  }, [activeDeadline, user]);
+
+  const initialCalView =
+    typeof window !== "undefined" && window.innerWidth < 768 ? "listMonth" : "dayGridMonth";
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-[var(--md-sys-color-on-surface)]">日程日历</h1>
         <div className="flex flex-wrap items-center gap-2.5">
-          <div className="lt-segmented">
-            <button
-              type="button"
-              onClick={() => {
-                setScope("my");
-                setLawyerFilterId(null);
-              }}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                scope === "my"
-                  ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                  : "text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-              }`}
-            >
-              我的日程
-            </button>
-            <button
-              type="button"
-              onClick={() => setScope("team")}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                scope === "team"
-                  ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                  : "text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-              }`}
-            >
-              全所总览
-            </button>
-          </div>
+          <MdSegmentedButton<"my" | "team">
+            value={scope}
+            onChange={(next) => {
+              setScope(next);
+              if (next === "my") setLawyerFilterId(null);
+            }}
+            ariaLabel="日历视图视角"
+            options={[
+              { value: "my", label: "我的日程" },
+              { value: "team", label: "全所总览" },
+            ]}
+          />
 
-          <button type="button" onClick={() => setIcsModalOpen(true)} className="lt-btn-secondary">
+          <button
+            type="button"
+            onClick={() => {
+              setIcsScope(scope);
+              setIcsMsg(null);
+              setIcsErr(null);
+              setIcsModalOpen(true);
+            }}
+            className="lt-btn-secondary"
+          >
             <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>.ics 日历订阅</span>
+            <span>日历订阅</span>
           </button>
 
           <button type="button" onClick={openCreateModal} className="lt-btn-primary">
@@ -497,12 +546,9 @@ export function CalendarWorkbench() {
       )}
 
       {(calendarQuery.data?.conflicts.length ?? 0) > 0 && (
-        <div
-          role="alert"
-          className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-rose-900 space-y-1.5"
-        >
+        <div role="alert" className="lt-alert-error space-y-1.5">
           <div className="flex items-center gap-2 font-semibold text-sm">
-            <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" aria-hidden="true" />
+            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span>检测到 {calendarQuery.data!.conflicts.length} 项同律师时间冲突：</span>
           </div>
           <ul className="list-disc pl-6 text-xs space-y-1">
@@ -541,25 +587,17 @@ export function CalendarWorkbench() {
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-4 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-            <label className="inline-flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeTentative}
-                onChange={(e) => setIncludeTentative(e.target.checked)}
-                className="rounded border-slate-300"
-              />
-              <span>显示待确认短信 (虚线)</span>
-            </label>
-            <label className="inline-flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeCompleted}
-                onChange={(e) => setIncludeCompleted(e.target.checked)}
-                className="rounded border-slate-300"
-              />
-              <span>显示已办结</span>
-            </label>
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <MdCheckbox
+              checked={includeTentative}
+              onChange={setIncludeTentative}
+              label="显示待确认预览"
+            />
+            <MdCheckbox
+              checked={includeCompleted}
+              onChange={setIncludeCompleted}
+              label="显示已办结"
+            />
           </div>
         </div>
 
@@ -593,28 +631,24 @@ export function CalendarWorkbench() {
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         <div
           ref={calendarWrapperRef}
-          className={`${
-            selectedEvent ? "xl:col-span-8" : "xl:col-span-12"
-          } lt-card p-4`}
+          className={`${selectedEvent ? "xl:col-span-8" : "xl:col-span-12"} lt-card p-4 overflow-x-auto`}
         >
           {calendarQuery.isError ? (
             <div role="alert" className="lt-alert-error flex items-center justify-between gap-3">
-              <span>日历数据加载失败，请检查网络连接后重试。</span>
-              <button
-                type="button"
-                onClick={() => calendarQuery.refetch()}
-                className="lt-btn-secondary py-1"
-              >
+              <span>日历数据加载失败，请重试。</span>
+              <button type="button" onClick={() => calendarQuery.refetch()} className="lt-btn-secondary py-1">
                 重新加载
               </button>
             </div>
           ) : calendarQuery.isLoading && !calendarQuery.data ? (
-            <p className="py-16 text-center text-sm text-slate-600">正在加载协同日历...</p>
+            <p className="py-16 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
+              正在加载协同日历...
+            </p>
           ) : (
             <FullCalendar
               ref={calendarRef}
               plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
-              initialView="dayGridMonth"
+              initialView={initialCalView}
               locale={zhCnLocale}
               headerToolbar={{
                 left: "prev,next today",
@@ -635,27 +669,27 @@ export function CalendarWorkbench() {
             ref={detailAsideRef}
             className="xl:col-span-4 lt-card p-5 space-y-4 xl:sticky xl:top-6"
           >
-            <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
+            <div className="flex items-start justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/60 pb-3">
               <div className="space-y-1">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <RiskBadge risk={selectedEvent.risk_level} />
-                  {selectedEvent.case_category && (
-                    <CategoryBadge category={selectedEvent.case_category} />
-                  )}
+                  {selectedEvent.case_category && <CategoryBadge category={selectedEvent.case_category} />}
                   {selectedEvent.is_tentative && (
-                    <span className="rounded bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-700">
-                      待分拣确认
+                    <span className="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+                      待确认
                     </span>
                   )}
                   {selectedEvent.is_manual_override && (
-                    <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                      手动覆写
+                    <span className="rounded-full bg-[#fef1d6] px-2 py-0.5 text-xs font-medium text-[#7a4b00]">
+                      人工覆写
                     </span>
                   )}
                 </div>
-                <h2 className="text-base font-bold text-slate-900">{selectedEvent.title}</h2>
+                <h2 className="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+                  {selectedEvent.title}
+                </h2>
                 {selectedEvent.case_title && (
-                  <p className="text-xs text-slate-600">
+                  <p className="text-xs text-[var(--md-sys-color-on-surface-variant)]">
                     {selectedEvent.case_title}{" "}
                     {selectedEvent.case_number ? `（${selectedEvent.case_number}）` : ""}
                   </p>
@@ -664,7 +698,7 @@ export function CalendarWorkbench() {
               <button
                 type="button"
                 onClick={() => setSelectedEvent(null)}
-                className="text-xs text-slate-600 hover:text-slate-900 shrink-0"
+                className="lt-btn-secondary py-1 px-2.5 text-xs shrink-0"
               >
                 收起
               </button>
@@ -683,8 +717,8 @@ export function CalendarWorkbench() {
 
             <dl className="space-y-2 text-xs">
               <div className="flex justify-between gap-2">
-                <dt className="text-slate-600">时间 / 到期日</dt>
-                <dd className="font-semibold text-slate-900 tabular-nums">
+                <dt className="text-[var(--md-sys-color-on-surface-variant)]">时间 / 到期日</dt>
+                <dd className="font-semibold text-[var(--md-sys-color-on-surface)] tabular-nums">
                   {selectedEvent.all_day
                     ? selectedEvent.start
                     : `${formatShanghaiDateTime(selectedEvent.start)} ~ ${formatShanghaiDateTime(
@@ -694,64 +728,59 @@ export function CalendarWorkbench() {
               </div>
               {selectedEvent.raw_due_date && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">节假日顺延前原日</dt>
-                  <dd className="text-slate-700 tabular-nums">{selectedEvent.raw_due_date}</dd>
+                  <dt className="text-[var(--md-sys-color-on-surface-variant)]">顺延前原日</dt>
+                  <dd className="tabular-nums">{selectedEvent.raw_due_date}</dd>
                 </div>
               )}
               {selectedEvent.holiday_roll_mode && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">顺延规则</dt>
-                  <dd className="text-right text-slate-700">
-                    {HOLIDAY_ROLL_LABELS[selectedEvent.holiday_roll_mode]}
-                  </dd>
+                  <dt className="text-[var(--md-sys-color-on-surface-variant)]">顺延规则</dt>
+                  <dd className="text-right">{HOLIDAY_ROLL_LABELS[selectedEvent.holiday_roll_mode]}</dd>
                 </div>
               )}
               {selectedEvent.roll_reason && (
-                <div className="rounded-lg bg-slate-50 p-2.5 text-slate-700">
-                  <span className="font-semibold text-slate-800">顺延说明：</span>
+                <div className="lt-surface-tonal p-2.5">
+                  <span className="font-semibold">顺延说明：</span>
                   {selectedEvent.roll_reason}
                 </div>
               )}
               {selectedEvent.legal_basis && (
-                <div className="rounded-lg bg-blue-50/70 p-2.5 text-blue-900">
-                  <span className="font-semibold">法条依据：</span>
+                <div className="rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-primary-container)]/40 p-2.5 text-[var(--md-sys-color-on-primary-container)]">
+                  <span className="font-semibold">法律依据：</span>
                   {selectedEvent.legal_basis}
                 </div>
               )}
               {selectedEvent.location && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">地点</dt>
-                  <dd className="text-slate-800">{selectedEvent.location}</dd>
+                  <dt className="text-[var(--md-sys-color-on-surface-variant)]">地点</dt>
+                  <dd>{selectedEvent.location}</dd>
                 </div>
               )}
               {selectedEvent.owner_name && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">负责律师</dt>
-                  <dd className="text-slate-800">{selectedEvent.owner_name}</dd>
+                  <dt className="text-[var(--md-sys-color-on-surface-variant)]">负责人</dt>
+                  <dd>{selectedEvent.owner_name}</dd>
                 </div>
               )}
             </dl>
 
             {selectedEvent.case_id && (
-              <Link
-                to={`/cases/${selectedEvent.case_id}`}
-                className="lt-btn-secondary w-full"
-              >
+              <Link to={`/cases/${selectedEvent.case_id}`} className="lt-btn-secondary w-full">
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>打开所属案件详情</span>
               </Link>
             )}
 
             {selectedEvent.source_type === "triage_tentative" && (
-              <div className="space-y-2.5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                <p>该事项来自未确认的短信分拣预览，确认入案后将转为正式日程/期限。</p>
+              <div className="space-y-2.5 rounded-[var(--md-sys-shape-corner-md)] border border-[#f6d48b] bg-[#fef1d6] p-3 text-xs text-[#7a4b00]">
+                <p>该事项来自收件箱待确认短信，确认入案后将转为正式日程或法定期限。</p>
                 <div className="flex flex-wrap items-center gap-2">
                   {selectedEvent.case_id && (
                     <button
                       type="button"
                       disabled={quickConfirmTriageMut.isPending}
                       onClick={() => quickConfirmTriageMut.mutate(selectedEvent)}
-                      className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                      className="lt-btn-primary py-1.5 px-3"
                     >
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                       <span>{quickConfirmTriageMut.isPending ? "确认中..." : "一键确认入案"}</span>
@@ -761,7 +790,7 @@ export function CalendarWorkbench() {
                     type="button"
                     disabled={quickIgnoreTriageMut.isPending}
                     onClick={() => quickIgnoreTriageMut.mutate(selectedEvent.record_id)}
-                    className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                    className="lt-btn-secondary py-1.5 px-3"
                   >
                     <Ban className="h-3.5 w-3.5" aria-hidden="true" />
                     <span>忽略</span>
@@ -771,13 +800,13 @@ export function CalendarWorkbench() {
                   to={`/inbox?id=${selectedEvent.record_id}`}
                   className="inline-flex items-center gap-1 font-semibold underline"
                 >
-                  去收件箱核对详情 →
+                  前往收件箱核对详情 →
                 </Link>
               </div>
             )}
 
             {selectedEvent.source_type === "deadline" && (
-              <div className="space-y-4 border-t border-slate-100 pt-3">
+              <div className="space-y-4 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-3">
                 <button
                   type="button"
                   disabled={updateDeadlineMut.isPending}
@@ -787,11 +816,7 @@ export function CalendarWorkbench() {
                       payload: { is_completed: !selectedEvent.is_completed },
                     })
                   }
-                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
-                    selectedEvent.is_completed
-                      ? "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                      : "bg-emerald-600 text-white hover:bg-emerald-700"
-                  }`}
+                  className={selectedEvent.is_completed ? "lt-btn-secondary w-full" : "lt-btn-primary w-full"}
                 >
                   {selectedEvent.is_completed ? (
                     <>
@@ -801,7 +826,7 @@ export function CalendarWorkbench() {
                   ) : (
                     <>
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>标记为已办结（停止后续预警）</span>
+                      <span>标记为已办结</span>
                     </>
                   )}
                 </button>
@@ -818,11 +843,11 @@ export function CalendarWorkbench() {
                       },
                     });
                   }}
-                  className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
+                  className="lt-surface-tonal space-y-2.5 p-3"
                 >
-                  <p className="text-xs font-semibold text-slate-800">人工覆写到期日（受重算保护）</p>
-                  <div className="space-y-1">
-                    <label htmlFor="override-due-date" className="block text-[11px] text-slate-600">
+                  <p className="text-xs font-semibold">人工调整到期日（重算时不覆写）</p>
+                  <div>
+                    <label htmlFor="override-due-date" className="block text-[11px] mb-1">
                       调整后到期日
                     </label>
                     <input
@@ -831,11 +856,11 @@ export function CalendarWorkbench() {
                       required
                       value={overrideDate}
                       onChange={(e) => setOverrideDate(e.target.value)}
-                      className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                      className="lt-input text-xs py-1.5"
                     />
                   </div>
-                  <div className="space-y-1">
-                    <label htmlFor="override-reason" className="block text-[11px] text-slate-600">
+                  <div>
+                    <label htmlFor="override-reason" className="block text-[11px] mb-1">
                       调整原因说明
                     </label>
                     <input
@@ -843,30 +868,22 @@ export function CalendarWorkbench() {
                       type="text"
                       value={overrideReason}
                       onChange={(e) => setOverrideReason(e.target.value)}
-                      placeholder="例如 法官书面批准延期举证"
-                      className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                      placeholder="例如 法官批准延期"
+                      className="lt-input text-xs py-1.5"
                     />
                   </div>
-                  <button
-                    type="submit"
-                    disabled={updateDeadlineMut.isPending}
-                    className="lt-btn-primary w-full py-1.5"
-                  >
-                    保存人工调整
+                  <button type="submit" disabled={updateDeadlineMut.isPending} className="lt-btn-primary w-full py-1.5">
+                    保存手动调整
                   </button>
                 </form>
 
-                <div className="space-y-2 rounded-lg border border-slate-200 p-3">
-                  <p className="text-xs font-semibold text-slate-800">提醒范围 & 个人加设提醒</p>
-                  <div className="space-y-1.5">
-                    <label htmlFor="dl-notify-type" className="block text-[11px] text-slate-600">
-                      接收范围（当前：
-                      {activeDeadline
-                        ? NOTIFY_TARGET_LABELS[activeDeadline.notify_target_type]
-                        : "加载中..."}
-                      ）
+                <div className="lt-surface-tonal space-y-3 p-3">
+                  <p className="text-xs font-semibold">提醒范围 & 个人定点闹钟</p>
+                  <div>
+                    <label htmlFor="dl-notify-type" className="block text-[11px] mb-1">
+                      接收范围
                     </label>
-                    <select
+                    <MdSelect
                       id="dl-notify-type"
                       value={activeDeadline?.notify_target_type ?? notifyTargetType}
                       onChange={(e) => {
@@ -877,17 +894,18 @@ export function CalendarWorkbench() {
                           payload: { notify_target_type: val },
                         });
                       }}
-                      className="lt-input py-1.5 text-xs"
+                      className="py-1.5 text-xs"
                     >
                       {(Object.keys(NOTIFY_TARGET_LABELS) as NotifyTargetType[]).map((k) => (
                         <option key={k} value={k}>
                           {NOTIFY_TARGET_LABELS[k]}
                         </option>
                       ))}
-                    </select>
+                    </MdSelect>
+
                     {(activeDeadline?.notify_target_type ?? notifyTargetType) === "custom" &&
                       (usersQuery.data?.length ?? 0) > 0 && (
-                        <div className="pt-1.5 space-y-1">
+                        <div className="pt-2 space-y-1">
                           <span className="block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                             点选指定接收人员：
                           </span>
@@ -912,9 +930,7 @@ export function CalendarWorkbench() {
                                       },
                                     });
                                   }}
-                                  className={`lt-chip py-0.5 text-[11px] ${
-                                    checked ? "lt-chip-active" : ""
-                                  }`}
+                                  className={`lt-chip py-0.5 text-[11px] ${checked ? "lt-chip-active" : ""}`}
                                 >
                                   {u.full_name}
                                 </button>
@@ -924,20 +940,18 @@ export function CalendarWorkbench() {
                         </div>
                       )}
                   </div>
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={activeDeadline?.escalate_to_supervisor ?? escalateSupervisor}
-                      onChange={(e) => {
-                        setEscalateSupervisor(e.target.checked);
-                        updateDeadlineMut.mutate({
-                          deadlineId: selectedEvent.record_id,
-                          payload: { escalate_to_supervisor: e.target.checked },
-                        });
-                      }}
-                    />
-                    <span>临期1天未办结升级预警督办合伙人</span>
-                  </label>
+
+                  <MdCheckbox
+                    checked={activeDeadline?.escalate_to_supervisor ?? escalateSupervisor}
+                    onChange={(checked) => {
+                      setEscalateSupervisor(checked);
+                      updateDeadlineMut.mutate({
+                        deadlineId: selectedEvent.record_id,
+                        payload: { escalate_to_supervisor: checked },
+                      });
+                    }}
+                    label={<span className="text-xs">临期 1 天未办结抄送督办合伙人</span>}
+                  />
 
                   <form
                     onSubmit={(e) => {
@@ -945,13 +959,13 @@ export function CalendarWorkbench() {
                       if (!personalAlertAt) return;
                       addPersonalAlertMut.mutate({
                         deadlineId: selectedEvent.record_id,
-                        fireAt: new Date(personalAlertAt).toISOString(),
+                        fireAt: toShanghaiIsoWithOffset(personalAlertAt),
                       });
                     }}
-                    className="space-y-1.5 border-t border-slate-100 pt-2"
+                    className="space-y-2 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-2.5"
                   >
-                    <label htmlFor="personal-alert-dt" className="block text-[11px] text-slate-600">
-                      个人自定义微信提醒时间点
+                    <label htmlFor="personal-alert-dt" className="block text-[11px]">
+                      个人定点提醒时间（北京时间）
                     </label>
                     <div className="flex gap-1.5">
                       <input
@@ -959,7 +973,7 @@ export function CalendarWorkbench() {
                         type="datetime-local"
                         value={personalAlertAt}
                         onChange={(e) => setPersonalAlertAt(e.target.value)}
-                        className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs"
+                        className="lt-input flex-1 px-2 py-1 text-xs"
                       />
                       <button
                         type="submit"
@@ -970,13 +984,43 @@ export function CalendarWorkbench() {
                         <span>加提醒</span>
                       </button>
                     </div>
+
+                    {ownPersonalAlerts.length > 0 && (
+                      <ul className="space-y-1 pt-1">
+                        {ownPersonalAlerts.map((alert) => (
+                          <li
+                            key={alert.fire_at}
+                            className="flex items-center justify-between gap-2 rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-surface-container-lowest)] px-2.5 py-1 text-[11px]"
+                          >
+                            <span className="tabular-nums">{formatShanghaiDateTime(alert.fire_at)}</span>
+                            <button
+                              type="button"
+                              aria-label="删除此个人提醒"
+                              disabled={updateDeadlineMut.isPending}
+                              onClick={() => {
+                                const remaining = ownPersonalAlerts.filter(
+                                  (item) => item.fire_at !== alert.fire_at
+                                );
+                                updateDeadlineMut.mutate({
+                                  deadlineId: selectedEvent.record_id,
+                                  payload: { personal_custom_alerts: remaining },
+                                });
+                              }}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container)] hover:text-[var(--md-sys-color-error)]"
+                            >
+                              <X className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </form>
                 </div>
               </div>
             )}
 
             {selectedEvent.source_type === "schedule" && (
-              <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
+              <div className="flex flex-col gap-2 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-3">
                 <button
                   type="button"
                   disabled={updateScheduleMut.isPending}
@@ -986,7 +1030,7 @@ export function CalendarWorkbench() {
                       payload: { is_completed: !selectedEvent.is_completed },
                     })
                   }
-                  className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+                  className={selectedEvent.is_completed ? "lt-btn-secondary w-full" : "lt-btn-primary w-full"}
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>{selectedEvent.is_completed ? "重新打开日程" : "标记已完成"}</span>
@@ -994,11 +1038,7 @@ export function CalendarWorkbench() {
                 <button
                   type="button"
                   disabled={deleteScheduleMut.isPending}
-                  onClick={() => {
-                    if (window.confirm(`确认删除日程「${selectedEvent.title}」？`)) {
-                      deleteScheduleMut.mutate(selectedEvent.record_id);
-                    }
-                  }}
+                  onClick={() => setDeleteScheduleTarget(selectedEvent)}
                   className="lt-btn-danger w-full"
                 >
                   <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1010,25 +1050,49 @@ export function CalendarWorkbench() {
         )}
       </div>
 
+      {/* ICS Subscription Modal */}
       <ModalDialog
         open={icsModalOpen}
         onClose={() => setIcsModalOpen(false)}
-        title="手机与桌面日历实时订阅 (.ics)"
-        subtitle="支持 Apple 日历、Outlook、企业微信日历导入；包含 VEVENT 与 VTODO"
+        title="手机与电脑日历实时订阅"
+        subtitle="支持 Apple 日历、Outlook 与企业微信日历"
         lightDismiss
       >
         <div className="space-y-4 text-sm">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
-            <p className="text-xs font-semibold text-slate-700">
-              当前视角订阅地址（{scope === "my" ? "仅我的案件与个人日程" : "团队全部可访问案件"}）
-            </p>
+          {icsMsg && (
+            <div role="status" className="lt-alert-success">
+              {icsMsg}
+            </div>
+          )}
+          {icsErr && (
+            <div role="alert" className="lt-alert-error">
+              {icsErr}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <span className="block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
+              选择订阅范围：
+            </span>
+            <MdSegmentedButton<"my" | "team">
+              value={icsScope}
+              onChange={setIcsScope}
+              ariaLabel="日历订阅范围"
+              options={[
+                { value: "my", label: "仅我的案件与日程" },
+                { value: "team", label: "团队全部可访问案件" },
+              ]}
+            />
+          </div>
+
+          <div className="lt-surface-tonal p-3.5 space-y-2">
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 readOnly
-                aria-label="ICS 订阅 URL"
+                aria-label="日历订阅链接"
                 value={icsUrl}
-                className="flex-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-700"
+                className="lt-input flex-1 py-1.5 text-xs font-mono"
               />
               <button type="button" onClick={copyIcsUrl} className="lt-btn-primary py-1.5">
                 {copiedIcs ? (
@@ -1036,32 +1100,34 @@ export function CalendarWorkbench() {
                 ) : (
                   <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
-                <span>{copiedIcs ? "已复制" : "复制"}</span>
+                <span>{copiedIcs ? "已复制" : "复制链接"}</span>
               </button>
             </div>
           </div>
-          <ul className="list-disc pl-5 text-xs text-slate-600 space-y-1">
-            <li>
-              <strong>iPhone / Mac 日历：</strong>打开“日历” → “添加日历” → “添加订阅日历”，粘贴上方地址并设置刷新频率为每15分钟。
-            </li>
-            <li>
-              <strong>安全提醒：</strong>订阅地址内含您的专属密钥，如泄露可点击下方按钮立即作废旧链接。
-            </li>
+
+          <ul className="list-disc pl-5 text-xs text-[var(--md-sys-color-on-surface-variant)] space-y-1">
+            <li>iPhone / Mac 打开「日历」→ 添加订阅日历，粘贴上方地址并建议设为每 15 分钟刷新。</li>
+            <li>订阅链接包含个人专属凭证，如需作废旧链接可点击下方重置。</li>
           </ul>
+
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               disabled={rotateIcsMut.isPending}
               onClick={() => rotateIcsMut.mutate()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+              className="lt-btn-secondary"
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{rotateIcsMut.isPending ? "重置中..." : "重置 ICS Token"}</span>
+              <span>{rotateIcsMut.isPending ? "重置中..." : "重置订阅链接"}</span>
+            </button>
+            <button type="button" onClick={() => setIcsModalOpen(false)} className="lt-btn-primary">
+              完成
             </button>
           </div>
         </div>
       </ModalDialog>
 
+      {/* Create Schedule / Custom Deadline Modal */}
       <ModalDialog
         open={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
@@ -1080,47 +1146,31 @@ export function CalendarWorkbench() {
             </div>
           )}
 
-          <div className="lt-segmented">
-            <button
-              type="button"
-              onClick={() => setCreateKind("schedule")}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                createKind === "schedule"
-                  ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                  : "text-[var(--md-sys-color-on-surface-variant)]"
-              }`}
-            >
-              具体日程（开庭 / 会见 / 阅卷）
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setCreateKind("deadline");
-                if (!newCaseId && casesQuery.data?.[0]) {
-                  setNewCaseId(String(casesQuery.data[0].id));
-                }
-              }}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                createKind === "deadline"
-                  ? "bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm"
-                  : "text-[var(--md-sys-color-on-surface-variant)]"
-              }`}
-            >
-              自定义期限节点
-            </button>
-          </div>
+          <MdSegmentedButton<"schedule" | "deadline">
+            value={createKind}
+            onChange={(next) => {
+              setCreateKind(next);
+              if (next === "deadline" && !newCaseId && casesQuery.data?.[0]) {
+                setNewCaseId(String(casesQuery.data[0].id));
+              }
+            }}
+            ariaLabel="新建事项类型"
+            options={[
+              { value: "schedule", label: "具体日程（开庭 / 会见 / 阅卷）" },
+              { value: "deadline", label: "自定义期限节点" },
+            ]}
+          />
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label htmlFor="cal-create-case" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="cal-create-case" className="block text-xs font-semibold mb-1">
                 关联案件 {createKind === "deadline" ? "*" : "（可选）"}
               </label>
-              <select
+              <MdSelect
                 id="cal-create-case"
                 value={newCaseId}
                 required={createKind === "deadline"}
                 onChange={(e) => setNewCaseId(e.target.value)}
-                className="lt-input"
               >
                 {createKind === "schedule" ? (
                   <option value="">不关联特定案件（个人日程）</option>
@@ -1132,36 +1182,34 @@ export function CalendarWorkbench() {
                     {c.case_title} {c.case_number ? `(${c.case_number})` : ""}
                   </option>
                 ))}
-              </select>
+              </MdSelect>
             </div>
 
             <div>
-              <label htmlFor="cal-create-risk" className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="cal-create-risk" className="block text-xs font-semibold mb-1">
                 风险等级
               </label>
-              <select
+              <MdSelect
                 id="cal-create-risk"
                 value={newRiskLevel}
                 onChange={(e) => setNewRiskLevel(e.target.value as RiskLevel)}
-                className="lt-input"
               >
                 <option value="critical">致命死线</option>
                 <option value="high">刚性程序</option>
                 <option value="normal">常规节点</option>
                 <option value="low">内部待办</option>
-              </select>
+              </MdSelect>
             </div>
           </div>
 
           <div>
-            <label htmlFor="cal-create-title" className="block text-xs font-semibold text-slate-700 mb-1">
+            <label htmlFor="cal-create-title" className="block text-xs font-semibold mb-1">
               标题 *
             </label>
             <input
               id="cal-create-title"
               type="text"
               required
-              autoFocus
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               placeholder={
@@ -1177,24 +1225,23 @@ export function CalendarWorkbench() {
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="cal-sched-cat" className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label htmlFor="cal-sched-cat" className="block text-xs font-semibold mb-1">
                     日程类型
                   </label>
-                  <select
+                  <MdSelect
                     id="cal-sched-cat"
                     value={newSchedCat}
                     onChange={(e) => setNewSchedCat(e.target.value)}
-                    className="lt-input"
                   >
                     {Object.entries(SCHEDULE_CATEGORY_LABELS).map(([k, v]) => (
                       <option key={k} value={k}>
                         {v}
                       </option>
                     ))}
-                  </select>
+                  </MdSelect>
                 </div>
                 <div>
-                  <label htmlFor="cal-sched-loc" className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label htmlFor="cal-sched-loc" className="block text-xs font-semibold mb-1">
                     地点 / 法庭 / 看守所
                   </label>
                   <input
@@ -1209,8 +1256,8 @@ export function CalendarWorkbench() {
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="cal-sched-start" className="block text-xs font-semibold text-slate-700 mb-1">
-                    开始时间 *
+                  <label htmlFor="cal-sched-start" className="block text-xs font-semibold mb-1">
+                    开始时间（北京时间） *
                   </label>
                   <input
                     id="cal-sched-start"
@@ -1222,8 +1269,8 @@ export function CalendarWorkbench() {
                   />
                 </div>
                 <div>
-                  <label htmlFor="cal-sched-end" className="block text-xs font-semibold text-slate-700 mb-1">
-                    结束时间 *
+                  <label htmlFor="cal-sched-end" className="block text-xs font-semibold mb-1">
+                    结束时间（北京时间） *
                   </label>
                   <input
                     id="cal-sched-end"
@@ -1240,7 +1287,7 @@ export function CalendarWorkbench() {
             <div className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="cal-dl-date" className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label htmlFor="cal-dl-date" className="block text-xs font-semibold mb-1">
                     到期日 *
                   </label>
                   <input
@@ -1253,7 +1300,7 @@ export function CalendarWorkbench() {
                   />
                 </div>
                 <div>
-                  <label htmlFor="cal-dl-basis" className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label htmlFor="cal-dl-basis" className="block text-xs font-semibold mb-1">
                     依据或备注
                   </label>
                   <input
@@ -1261,28 +1308,21 @@ export function CalendarWorkbench() {
                     type="text"
                     value={newLegalBasis}
                     onChange={(e) => setNewLegalBasis(e.target.value)}
-                    placeholder="例如 法官口头指定/双方约定"
+                    placeholder="例如 法官口头指定 / 双方约定"
                     className="lt-input"
                   />
                 </div>
               </div>
-              <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={newApplyRoll}
-                  onChange={(e) => setNewApplyRoll(e.target.checked)}
-                />
-                <span>如遇国家法定节假日或周末，自动顺延至首个工作日</span>
-              </label>
+              <MdCheckbox
+                checked={newApplyRoll}
+                onChange={setNewApplyRoll}
+                label="如遇国家法定节假日或周末，自动顺延至首个工作日"
+              />
             </div>
           )}
 
           <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setCreateModalOpen(false)}
-              className="lt-btn-secondary"
-            >
+            <button type="button" onClick={() => setCreateModalOpen(false)} className="lt-btn-secondary">
               取消
             </button>
             <button type="submit" disabled={createItemMut.isPending} className="lt-btn-primary">
@@ -1291,6 +1331,19 @@ export function CalendarWorkbench() {
           </div>
         </form>
       </ModalDialog>
+
+      <ConfirmDialog
+        open={Boolean(deleteScheduleTarget)}
+        onClose={() => setDeleteScheduleTarget(null)}
+        onConfirm={() => {
+          if (deleteScheduleTarget) deleteScheduleMut.mutate(deleteScheduleTarget.record_id);
+        }}
+        loading={deleteScheduleMut.isPending}
+        title="删除日程安排"
+        description={`确定删除日程「${deleteScheduleTarget?.title ?? ""}」吗？删除后不可撤销。`}
+        confirmLabel="确认删除"
+        tone="danger"
+      />
     </div>
   );
 }

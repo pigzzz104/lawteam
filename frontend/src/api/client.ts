@@ -7,6 +7,7 @@ import type {
   CaseDetailRead,
   CaseEventResponse,
   CaseListItem,
+  CaseMemberRead,
   CaseMemberRole,
   CaseVisibility,
   CourtAutoFetchMode,
@@ -20,6 +21,7 @@ import type {
   InboxTriageRead,
   NotifyChannel,
   NotifyTargetType,
+  PersonalAlertItem,
   ReminderDelivery,
   ReminderSweepResponse,
   RiskLevel,
@@ -139,6 +141,8 @@ export const authApi = {
     sms_webhook_secret?: string | null;
     rotate_sms_token?: boolean;
     rotate_ics_token?: boolean;
+    default_deadline_offsets_days?: number[];
+    default_schedule_offsets_minutes?: number[];
   }) =>
     apiFetch<UserSelfRead>("/api/auth/me", {
       method: "PATCH",
@@ -177,6 +181,7 @@ export const usersApi = {
       phone_os: string;
       phone_last4: string | null;
       id_card_last4: string | null;
+      court_auto_fetch_mode: CourtAutoFetchMode | null;
       calendar_color: string;
       is_active: boolean;
       new_password: string;
@@ -284,6 +289,7 @@ export const casesApi = {
     custody_status?: string | null;
     custody_place?: string | null;
     crime_type?: string | null;
+    charge_name?: string | null;
     trial_mode?: string | null;
     members?: Array<{ user_id: number; role_in_case: CaseMemberRole }>;
   }) =>
@@ -310,6 +316,7 @@ export const casesApi = {
       custody_status: string | null;
       custody_place: string | null;
       crime_type: string | null;
+      charge_name: string | null;
       trial_mode: string | null;
       is_archived: boolean;
     }>
@@ -322,7 +329,7 @@ export const casesApi = {
     caseId: number,
     members: Array<{ user_id: number; role_in_case: CaseMemberRole }>
   ) =>
-    apiFetch(`/api/cases/${caseId}/members`, {
+    apiFetch<CaseMemberRead[]>(`/api/cases/${caseId}/members`, {
       method: "PUT",
       body: JSON.stringify(members),
     }),
@@ -383,7 +390,7 @@ export const casesApi = {
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   },
   auditLogs: (caseId: number) => apiFetch<AuditLogRead[]>(`/api/cases/${caseId}/audit-logs`),
 };
@@ -419,6 +426,7 @@ export const calendarApi = {
     risk_level?: RiskLevel;
     override_reason?: string | null;
     notify_target_type?: NotifyTargetType;
+    notify_owner_id?: number | null;
     custom_notify_user_ids?: number[];
     escalate_to_supervisor?: boolean;
     reminder_offsets_days?: number[];
@@ -439,9 +447,11 @@ export const calendarApi = {
       override_reason: string | null;
       is_completed: boolean;
       notify_target_type: NotifyTargetType;
+      notify_owner_id: number | null;
       custom_notify_user_ids: number[];
       escalate_to_supervisor: boolean;
       reminder_offsets_days: number[];
+      personal_custom_alerts: PersonalAlertItem[];
     }>
   ) =>
     apiFetch<Deadline>(`/api/deadlines/${deadlineId}`, {
@@ -495,13 +505,21 @@ export const calendarApi = {
 };
 
 export const inboxApi = {
-  list: (params?: { status?: TriageStatus; item_type?: string; auto_archived?: boolean }) => {
+  list: (params?: {
+    status?: TriageStatus;
+    item_type?: string;
+    auto_archived?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.item_type) qs.set("item_type", params.item_type);
     if (params?.auto_archived !== undefined) {
       qs.set("auto_archived", String(params.auto_archived));
     }
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return apiFetch<InboxTriageRead[]>(`/api/inbox${suffix}`);
   },
@@ -607,7 +625,7 @@ export const inboxApi = {
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   },
 };
 

@@ -42,6 +42,8 @@ export interface UserSelfRead {
   sms_webhook_token: string;
   has_sms_webhook_secret: boolean;
   ics_feed_token: string;
+  default_deadline_offsets_days: number[];
+  default_schedule_offsets_minutes: number[];
   is_active: boolean;
   created_at: string;
 }
@@ -57,7 +59,7 @@ export interface UserSummary {
   phone_os: string;
   phone_last4: string | null;
   id_card_last4: string | null;
-  court_auto_fetch_mode: CourtAutoFetchMode;
+  court_auto_fetch_mode: CourtAutoFetchMode | null;
   calendar_color: string;
   is_active: boolean;
   created_at: string;
@@ -99,6 +101,7 @@ export interface CaseRecord {
   custody_status: string | null;
   custody_place: string | null;
   crime_type: string | null;
+  charge_name: string | null;
   trial_mode: string | null;
   folder_rel_path: string;
   is_archived: boolean;
@@ -171,6 +174,7 @@ export interface Deadline {
   completed_at: string | null;
   completed_by: number | null;
   notify_target_type: NotifyTargetType;
+  notify_owner_id: number | null;
   custom_notify_user_ids: number[];
   escalate_to_supervisor: boolean;
   reminder_offsets_days: number[];
@@ -189,6 +193,7 @@ export interface ScheduleItem {
   location: string | null;
   risk_level: RiskLevel;
   notify_target_type: NotifyTargetType;
+  notify_owner_id: number | null;
   custom_notify_user_ids: number[];
   reminder_offsets_minutes: number[];
   is_completed: boolean;
@@ -378,6 +383,8 @@ export interface InboxConfirmRequest {
     visibility: CaseVisibility;
     client_name: string;
     handling_agency?: string | null;
+    crime_type?: string | null;
+    charge_name?: string | null;
   } | null;
   event_type?: string | null;
   event_date?: string | null;
@@ -412,10 +419,18 @@ export interface ReminderDelivery {
   source_type: string;
   source_id: number;
   recipient_user_ids: number[];
+  sent_user_ids: number[];
+  retry_count: number;
+  next_retry_at: string | null;
   scheduled_at: string;
   sent_at: string | null;
   status: "pending" | "sent" | "skipped_completed" | "failed";
   error_msg: string | null;
+  case_id: number | null;
+  case_title: string | null;
+  case_number: string | null;
+  source_title: string | null;
+  recipient_names: string[];
 }
 
 export interface ReminderSweepResponse {

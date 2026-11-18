@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  BellRing,
   Briefcase,
   CalendarDays,
   Inbox,
@@ -12,7 +11,7 @@ import {
   PanelLeftOpen,
   Scale,
   ShieldCheck,
-  Smartphone,
+  SlidersHorizontal,
   Users,
   X,
 } from "lucide-react";
@@ -36,6 +35,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const mobileDrawerRef = useRef<HTMLDialogElement>(null);
   const mobileSheetRef = useRef<HTMLDivElement>(null);
+  const mobileCloseBtnRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerId = useId();
 
   useEffect(() => {
@@ -55,13 +55,14 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (!drawer.open) {
         drawer.showModal();
       }
+      window.requestAnimationFrame(() => mobileCloseBtnRef.current?.focus());
     } else if (drawer.open) {
       void closeDialogWithExitAnimation(drawer);
     }
   }, [mobileNavOpen]);
 
   const pendingInboxQuery = useQuery({
-    queryKey: ["inbox", "badge-count"],
+    queryKey: ["inbox", "items"],
     queryFn: () => inboxApi.list(),
     refetchInterval: 30_000,
     enabled: Boolean(user),
@@ -76,8 +77,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { to: "/cases", label: "案件管理", icon: Briefcase },
     { to: "/inbox", label: "收件箱", icon: Inbox, badge: pendingCount },
     { to: "/rules", label: "期限规则", icon: Scale },
-    { to: "/phone-setup", label: "短信接入", icon: Smartphone },
-    { to: "/reminders", label: "提醒设置", icon: BellRing },
+    { to: "/settings", label: "个人设置", icon: SlidersHorizontal },
     ...(user?.system_role === "admin"
       ? [{ to: "/team", label: "团队成员", icon: Users }]
       : []),
@@ -109,8 +109,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         {isMobile ? (
           <button
+            ref={mobileCloseBtnRef}
             type="button"
-            autoFocus
             className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]"
             onClick={() => setMobileNavOpen(false)}
             aria-label="关闭侧边导航"
