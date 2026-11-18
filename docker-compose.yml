@@ -9,7 +9,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-lawteam}
       TZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -30,7 +30,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lawteam}:${POSTGRES_PASSWORD:-lawteam_dev_password}@postgres:5432/${POSTGRES_DB:-lawteam}
       CASES_ROOT: /app/data/cases
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data/cases:/app/data/cases
     depends_on:

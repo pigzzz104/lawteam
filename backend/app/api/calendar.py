@@ -229,7 +229,10 @@ def _schedule_lawyers(
     case_participants: dict[int, set[int]],
 ) -> set[int]:
     uids: set[int] = {sched.owner_id}
-    if sched.notify_target_type == NotifyTargetType.CASE_TEAM and sched.case_id in case_participants:
+    if (
+        sched.notify_target_type in (NotifyTargetType.CASE_TEAM, NotifyTargetType.BY_ROLE)
+        and sched.case_id in case_participants
+    ):
         uids |= case_participants[sched.case_id]
     elif sched.notify_target_type == NotifyTargetType.CUSTOM_USERS:
         uids |= set(sched.custom_notify_user_ids or [])
@@ -575,6 +578,18 @@ def export_ics_feed(
     cal.add("x-wr-calname", f"LawTeam-OS ({user.full_name})")
     cal.add("x-wr-timezone", "Asia/Shanghai")
 
+    vtz = icalendar.Timezone()
+    vtz.add("tzid", "Asia/Shanghai")
+    vtz_std = icalendar.TimezoneStandard()
+    vtz_std.add("dtstart", datetime(1970, 1, 1, 0, 0, 0))
+    vtz_std.add("tzoffsetfrom", timedelta(hours=8))
+    vtz_std.add("tzoffsetto", timedelta(hours=8))
+    vtz_std.add("tzname", "CST")
+    vtz.add_component(vtz_std)
+    cal.add_component(vtz)
+
+    dtstamp_utc = datetime.now(timezone.utc)
+
     risk_labels = {
         RiskLevel.CRITICAL: "致命死线",
         RiskLevel.HIGH: "刚性程序",
@@ -602,6 +617,7 @@ def export_ics_feed(
 
         vevent = icalendar.Event()
         vevent.add("uid", f"deadline-event-{dl.id}@lawteam.local")
+        vevent.add("dtstamp", dtstamp_utc)
         vevent.add("summary", summary)
         vevent.add("dtstart", dl.due_date)
         vevent.add("dtend", dl.due_date + timedelta(days=1))
@@ -611,6 +627,7 @@ def export_ics_feed(
         if not dl.is_completed:
             vtodo = icalendar.Todo()
             vtodo.add("uid", f"deadline-todo-{dl.id}@lawteam.local")
+            vtodo.add("dtstamp", dtstamp_utc)
             vtodo.add("summary", summary)
             vtodo.add("due", datetime.combine(dl.due_date, time(17, 0), tzinfo=SHANGHAI_TZ))
             vtodo.add("status", "NEEDS-ACTION")
@@ -626,6 +643,7 @@ def export_ics_feed(
         status_prefix = "[已完成] " if sched.is_completed else ""
         vevent = icalendar.Event()
         vevent.add("uid", f"schedule-{sched.id}@lawteam.local")
+        vevent.add("dtstamp", dtstamp_utc)
         vevent.add("summary", f"{status_prefix}[{sched.category}] {case_prefix}{sched.title}")
         vevent.add("dtstart", _to_shanghai(sched.start_time))
         vevent.add("dtend", _to_shanghai(sched.end_time))

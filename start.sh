@@ -77,14 +77,43 @@ port_in_use() {
 }
 
 check_pg_port() {
+  local host="${1:-127.0.0.1}"
+  local port="${2:-5432}"
   python3 -c '
 import socket, sys
+h, p = sys.argv[1], int(sys.argv[2])
 try:
-    with socket.create_connection(("127.0.0.1", 5432), timeout=1.0):
+    with socket.create_connection((h, p), timeout=1.5):
         sys.exit(0)
 except OSError:
     sys.exit(1)
-' >/dev/null 2>&1
+' "$host" "$port" >/dev/null 2>&1
+}
+
+read_db_host_port() {
+  python3 - "$ROOT_DIR/.env" <<'PY'
+import os, pathlib, sys
+from urllib.parse import urlparse
+db_url = os.environ.get("DATABASE_URL", "")
+env_path = pathlib.Path(sys.argv[1])
+if not db_url and env_path.exists():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip() == "DATABASE_URL":
+            db_url = v.strip().strip("\"\x27")
+            break
+host, port = "127.0.0.1", "5432"
+if db_url:
+    p = urlparse(db_url)
+    if p.hostname:
+        host = p.hostname
+    if p.port:
+        port = str(p.port)
+print(f"{host} {port}")
+PY
 }
 
 # 1. Ensure .env
@@ -118,27 +147,30 @@ if port_in_use "$FRONTEND_PORT"; then
 fi
 
 # 3. Ensure PostgreSQL is running
-echo "[2/5] 检查 PostgreSQL (127.0.0.1:5432)..."
-if ! check_pg_port; then
-  if command -v brew >/dev/null 2>&1 && brew services list 2>/dev/null | grep -q "postgresql"; then
-    PG_SVC="$(brew services list | awk '/postgresql/{print $1; exit}')"
-    echo "      正在通过 Homebrew 启动 $PG_SVC..."
-    brew services start "$PG_SVC" >/dev/null || true
-  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "      正在通过 Docker Compose 启动 postgres 容器..."
-    docker compose -f "$ROOT_DIR/docker-compose.yml" up -d postgres
-  fi
-
-  for _ in $(seq 1 30); do
-    if check_pg_port; then
-      break
+read -r PG_HOST PG_PORT <<< "$(read_db_host_port)"
+echo "[2/5] 检查 PostgreSQL ($PG_HOST:$PG_PORT)..."
+if ! check_pg_port "$PG_HOST" "$PG_PORT"; then
+  if [[ "$PG_HOST" == "127.0.0.1" || "$PG_HOST" == "localhost" ]]; then
+    if command -v brew >/dev/null 2>&1 && brew services list 2>/dev/null | grep -q "postgresql"; then
+      PG_SVC="$(brew services list | awk '/postgresql/{print $1; exit}')"
+      echo "      正在通过 Homebrew 启动 $PG_SVC..."
+      brew services start "$PG_SVC" >/dev/null || true
+    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      echo "      正在通过 Docker Compose 启动 postgres 容器..."
+      docker compose -f "$ROOT_DIR/docker-compose.yml" up -d postgres
     fi
-    sleep 1
-  done
+
+    for _ in $(seq 1 30); do
+      if check_pg_port "$PG_HOST" "$PG_PORT"; then
+        break
+      fi
+      sleep 1
+    done
+  fi
 fi
 
-if ! check_pg_port; then
-  echo "错误：PostgreSQL (127.0.0.1:5432) 未就绪，请先启动数据库或 Docker Desktop。" >&2
+if ! check_pg_port "$PG_HOST" "$PG_PORT"; then
+  echo "错误：PostgreSQL ($PG_HOST:$PG_PORT) 未就绪，请先启动数据库或检查 DATABASE_URL。" >&2
   exit 1
 fi
 
@@ -157,6 +189,10 @@ fi
   cd "$BACKEND_DIR"
   if [[ ! -d ".venv" ]]; then
     uv sync
+  fi
+  if ! uv run python -c "import pathlib, playwright.sync_api as pw; p=pw.sync_playwright().start(); exe=pathlib.Path(p.chromium.executable_path); p.stop(); assert exe.exists()" >/dev/null 2>&1; then
+    echo "      正在安装 Playwright Chromium 浏览器运行时（用于司法送达抓件）..."
+    uv run playwright install chromium
   fi
   uv run alembic upgrade head
 )
@@ -198,7 +234,7 @@ fi
 echo "[5/5] 启动前端工作台 (http://127.0.0.1:$FRONTEND_PORT)..."
 (
   cd "$FRONTEND_DIR"
-  exec ./node_modules/.bin/vite --host 127.0.0.1 --port "$FRONTEND_PORT"
+  VITE_API_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" exec ./node_modules/.bin/vite --host 127.0.0.1 --port "$FRONTEND_PORT"
 ) >"$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 echo "$FRONTEND_PID" > "$LOG_DIR/frontend.pid"
