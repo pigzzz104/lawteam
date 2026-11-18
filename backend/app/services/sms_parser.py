@@ -147,6 +147,13 @@ _SUGGESTED_STAGE_BY_EVENT: dict[tuple[str, str], str] = {
     ("commercial_arb", "hearing_scheduled"): "仲裁开庭",
     ("commercial_arb", "arbitration_award_served"): "裁决与3个月撤裁期",
     ("enforcement", "enforcement_notice_served"): "网络查控与财产调查",
+    ("enforcement", "preservation_bank_done"): "查封处置/续封盯防",
+    ("enforcement", "preservation_movable_done"): "查封处置/续封盯防",
+    ("enforcement", "preservation_real_estate_done"): "查封处置/续封盯防",
+    ("enforcement", "enforcement_settlement_signed"): "终本/执行完毕",
+    ("non_litigation", "retainer_started"): "尽调/起草阶段",
+    ("non_litigation", "project_milestone_started"): "谈判/交付",
+    ("non_litigation", "payment_notice_issued"): "项目完结",
 }
 
 
@@ -290,9 +297,13 @@ def _extract_doc_title_hint(content: str) -> Optional[str]:
         "民事判决书",
         "刑事判决书",
         "行政判决书",
+        "执行异议裁定书",
+        "执行裁定书",
         "裁定书",
         "仲裁裁决书",
         "行政复议决定书",
+        "执行通知书",
+        "报告财产令",
         "举证通知书",
         "应诉通知书",
         "起诉状副本",
@@ -350,11 +361,13 @@ def _guess_event_type(content: str, doc_title_hint: Optional[str], patterns: dic
     # Check specific procedural docs before generic hearing/service
     priority = (
         "judgment_served",
+        "enforcement_objection_served",
         "ruling_served",
         "arbitration_award_served",
         "reconsideration_decision_served",
         "evidence_notice_served",
         "pleading_served",
+        "enforcement_notice_served",
         "detention_notified",
         "case_transferred_arrest",
         "arrest_executed",

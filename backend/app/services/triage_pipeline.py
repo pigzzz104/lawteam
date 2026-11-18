@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.core.security import record_audit_log
 from app.database import engine
 from app.models.entities import (
+    AutoTriagePolicy,
     DeadlineRule,
     Document,
     InboxTriageItem,
@@ -67,6 +68,31 @@ def _apply_match_metadata(
     return updated
 
 
+_JUDGMENT_RULING_EVENTS = frozenset(
+    {
+        "judgment_served",
+        "ruling_served",
+        "arbitration_award_served",
+        "reconsideration_decision_served",
+        "enforcement_objection_served",
+    }
+)
+
+
+def _get_triage_policy_map(session: Session) -> dict[str, AutoTriagePolicy]:
+    rows = list(session.exec(select(AutoTriagePolicy)).all())
+    return {row.policy_key: row for row in rows}
+
+
+def _policy_requires_confirm(
+    policies: dict[str, AutoTriagePolicy], policy_key: str
+) -> Optional[AutoTriagePolicy]:
+    policy = policies.get(policy_key)
+    if policy is not None and policy.mode == "require_confirm":
+        return policy
+    return None
+
+
 def evaluate_and_apply_auto_triage(
     session: Session,
     *,
@@ -95,6 +121,8 @@ def evaluate_and_apply_auto_triage(
         triage.extracted_payload = payload
         return triage
 
+    policies = _get_triage_policy_map(session)
+
     # 1. Auto-ignore obvious non-business noise SMS
     if (
         triage.item_type != "invoice_archive"
@@ -106,6 +134,14 @@ def evaluate_and_apply_auto_triage(
         and not payload.get("hearing_time")
         and not triage.downloaded_files
     ):
+        noise_policy = _policy_requires_confirm(policies, "noise_other_sms")
+        if noise_policy is not None:
+            payload["triage_decision"] = "needs_confirm"
+            payload["triage_reason"] = (
+                f"团队自动分拣策略已将「{noise_policy.label}」设为人工二次复核，请确认处理"
+            )
+            triage.extracted_payload = payload
+            return triage
         payload["auto_ignored"] = True
         payload["triage_decision"] = "auto_ignored"
         payload["triage_reason"] = "非涉案/非程序通知短信，已自动忽略降噪"
@@ -134,6 +170,14 @@ def evaluate_and_apply_auto_triage(
             match_res.confidence in ("exact_case_number", "unique_client", "unique_client_alias")
             and match_res.case is not None
         ):
+            inv_policy = _policy_requires_confirm(policies, "invoice_archive")
+            if inv_policy is not None:
+                payload["triage_decision"] = "needs_confirm"
+                payload["triage_reason"] = (
+                    f"已匹配案件「{match_res.case.case_title}」，但团队策略已将「{inv_policy.label}」设为人工二次复核"
+                )
+                triage.extracted_payload = payload
+                return triage
             triage.extracted_payload = payload
             apply_triage_to_case(
                 session,
@@ -169,6 +213,14 @@ def evaluate_and_apply_auto_triage(
 
     # 3a. Hearing notice with parsed date/time -> auto-archive + write ScheduleItem
     if ev_type == "hearing_scheduled" and hearing_dt is not None:
+        hearing_policy = _policy_requires_confirm(policies, "hearing_notice")
+        if hearing_policy is not None:
+            payload["triage_decision"] = "needs_confirm"
+            payload["triage_reason"] = (
+                f"已匹配案号并识别开庭时间，团队策略已将「{hearing_policy.label}」设为人工二次复核"
+            )
+            triage.extracted_payload = payload
+            return triage
         triage.extracted_payload = payload
         ev_date = _parse_event_date(payload.get("event_date")) if payload.get("event_date") else hearing_dt.date()
         doc_hint = payload.get("doc_title_hint") or "开庭通知"
@@ -193,6 +245,14 @@ def evaluate_and_apply_auto_triage(
 
     # 3b. Routine non-deadline document (e.g. 上诉缴费单) -> auto-archive file + log event
     if ev_type == "document_served" and triage.downloaded_files and payload.get("doc_title_hint"):
+        routine_policy = _policy_requires_confirm(policies, "routine_doc")
+        if routine_policy is not None:
+            payload["triage_decision"] = "needs_confirm"
+            payload["triage_reason"] = (
+                f"已取回常规文书并匹配案号，团队策略已将「{routine_policy.label}」设为人工二次复核"
+            )
+            triage.extracted_payload = payload
+            return triage
         triage.extracted_payload = payload
         doc_hint = str(payload.get("doc_title_hint"))
         apply_triage_to_case(
@@ -234,6 +294,20 @@ def evaluate_and_apply_auto_triage(
             ):
                 payload["triage_decision"] = "needs_confirm"
                 payload["triage_reason"] = "举证通知书为扫描件，未能自动提取法院指定举证天数，请人工核对"
+                triage.extracted_payload = payload
+                return triage
+
+            policy_key = (
+                "judgment_ruling_doc"
+                if ev_type in _JUDGMENT_RULING_EVENTS
+                else "procedural_deadline_doc"
+            )
+            doc_policy = _policy_requires_confirm(policies, policy_key)
+            if doc_policy is not None:
+                payload["triage_decision"] = "needs_confirm"
+                payload["triage_reason"] = (
+                    f"已匹配案号并命中 {len(matching_rules)} 条期限规则，团队策略已将「{doc_policy.label}」设为人工二次复核"
+                )
                 triage.extracted_payload = payload
                 return triage
 

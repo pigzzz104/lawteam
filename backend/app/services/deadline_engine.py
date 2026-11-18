@@ -270,3 +270,78 @@ def derive_deadlines_for_event(
 
     session.flush()
     return derived
+
+
+def recalculate_rule_deadlines(session: Session, rule: DeadlineRule) -> dict[str, int]:
+    """
+    Recalculate open, non-overridden deadlines on active cases affected by ``rule``.
+
+    Deadlines with ``is_manual_override=True`` or ``is_completed=True`` are never altered.
+    """
+    stats = {
+        "affected_cases_count": 0,
+        "affected_events_count": 0,
+        "updated_deadlines_count": 0,
+        "created_deadlines_count": 0,
+        "skipped_manual_override_count": 0,
+        "skipped_completed_count": 0,
+    }
+    if not rule.is_enabled:
+        return stats
+
+    active_cases = list(
+        session.exec(
+            select(Case)
+            .where(
+                Case.case_category == rule.case_category,
+                Case.is_archived == False,  # noqa: E712
+            )
+            .order_by(Case.id)
+        ).all()
+    )
+
+    for case in active_cases:
+        if case.id is None or not rule_matches_case(rule, case):
+            continue
+        events = list(
+            session.exec(
+                select(CaseEvent)
+                .where(
+                    CaseEvent.case_id == case.id,
+                    CaseEvent.event_type == rule.trigger_event_type,
+                )
+                .order_by(CaseEvent.id)
+            ).all()
+        )
+        if not events:
+            continue
+        stats["affected_cases_count"] += 1
+
+        for event in events:
+            if event.id is None:
+                continue
+            stats["affected_events_count"] += 1
+            existing = session.exec(
+                select(Deadline).where(
+                    Deadline.case_id == case.id,
+                    Deadline.source_event_id == event.id,
+                    Deadline.rule_code == rule.rule_code,
+                )
+            ).first()
+            if existing is not None:
+                if existing.is_manual_override:
+                    stats["skipped_manual_override_count"] += 1
+                    continue
+                if existing.is_completed:
+                    stats["skipped_completed_count"] += 1
+                    continue
+
+            derived = derive_deadlines_for_event(session, case, event)
+            matched = [d for d in derived if d.rule_code == rule.rule_code]
+            if matched:
+                if existing is None:
+                    stats["created_deadlines_count"] += len(matched)
+                else:
+                    stats["updated_deadlines_count"] += len(matched)
+
+    return stats

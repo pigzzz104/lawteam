@@ -403,3 +403,21 @@ class AuditLog(SQLModel, table=True):
         default_factory=dict, sa_column=Column(JSON, nullable=False)
     )
     created_at: datetime = Field(default_factory=utcnow, sa_column=_utc_column(index=True))
+
+
+class AutoTriagePolicy(SQLModel, table=True):
+    """团队级自动分拣策略开关（按文书/短信类型配置自动归档或人工二次复核）"""
+
+    __tablename__ = "auto_triage_policies"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    policy_key: str = Field(unique=True, index=True)
+    label: str
+    description: str = Field(default="")
+    mode: str = Field(
+        default="auto_archive",
+        description="auto_archive(默认自动归档/处理) | require_confirm(转人工二次复核)",
+    )
+    sort_order: int = Field(default=0)
+    updated_by: Optional[int] = Field(default=None, foreign_key="users.id")
+    updated_at: datetime = Field(default_factory=utcnow, sa_column=_utc_column())

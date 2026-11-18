@@ -307,6 +307,30 @@ export interface DeadlineRule {
   is_enabled: boolean;
 }
 
+export interface RuleRecalculateResponse {
+  rule_id: number;
+  rule_code: string;
+  affected_cases_count: number;
+  affected_events_count: number;
+  updated_deadlines_count: number;
+  created_deadlines_count: number;
+  skipped_manual_override_count: number;
+  skipped_completed_count: number;
+}
+
+export type AutoTriagePolicyMode = "auto_archive" | "require_confirm";
+
+export interface AutoTriagePolicy {
+  id: number;
+  policy_key: string;
+  label: string;
+  description: string;
+  mode: AutoTriagePolicyMode;
+  sort_order: number;
+  updated_by: number | null;
+  updated_at: string;
+}
+
 export interface StageCategoryTemplate {
   label: string;
   default_subtype: string;

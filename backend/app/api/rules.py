@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.core.security import get_current_user, record_audit_log, require_admin
-from app.core.seed import load_stage_templates
+from app.core.seed import load_stage_templates, seed_auto_triage_policies
 from app.database import get_session
 from app.models.entities import (
+    AutoTriagePolicy,
     CaseCategory,
     DeadlineRule,
     HolidayRollMode,
     RiskLevel,
     User,
+    utcnow,
 )
+from app.services.deadline_engine import recalculate_rule_deadlines
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
@@ -47,6 +50,69 @@ class DeadlineRuleUpdate(BaseModel):
     risk_level: Optional[RiskLevel] = None
     default_offsets_days: Optional[list[int]] = None
     is_enabled: Optional[bool] = None
+
+
+class RuleRecalculateResponse(BaseModel):
+    rule_id: int
+    rule_code: str
+    affected_cases_count: int
+    affected_events_count: int
+    updated_deadlines_count: int
+    created_deadlines_count: int
+    skipped_manual_override_count: int
+    skipped_completed_count: int
+
+
+class AutoTriagePolicyUpdate(BaseModel):
+    mode: Literal["auto_archive", "require_confirm"]
+
+
+@router.get("/auto-triage-policies", response_model=list[AutoTriagePolicy])
+def list_auto_triage_policies(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[AutoTriagePolicy]:
+    """List team-wide auto-archive vs manual-confirm policy toggles."""
+    seed_auto_triage_policies(session)
+    return list(
+        session.exec(
+            select(AutoTriagePolicy).order_by(
+                AutoTriagePolicy.sort_order, AutoTriagePolicy.id
+            )
+        ).all()
+    )
+
+
+@router.patch("/auto-triage-policies/{policy_key}", response_model=AutoTriagePolicy)
+def update_auto_triage_policy(
+    policy_key: str,
+    payload: AutoTriagePolicyUpdate,
+    admin_user: User = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> AutoTriagePolicy:
+    """Admin-only toggle for per-category auto-archive vs human confirmation."""
+    seed_auto_triage_policies(session)
+    policy = session.exec(
+        select(AutoTriagePolicy).where(AutoTriagePolicy.policy_key == policy_key)
+    ).first()
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Auto-triage policy not found")
+
+    policy.mode = payload.mode
+    policy.updated_by = admin_user.id
+    policy.updated_at = utcnow()
+    session.add(policy)
+    record_audit_log(
+        session,
+        actor_user_id=admin_user.id,
+        action="triage_policy.update",
+        entity_type="auto_triage_policy",
+        entity_id=policy.id,
+        detail={"policy_key": policy.policy_key, "mode": policy.mode},
+    )
+    session.commit()
+    session.refresh(policy)
+    return policy
 
 
 @router.get("/stage-templates")
@@ -185,3 +251,31 @@ def delete_rule(
     )
     session.delete(rule)
     session.commit()
+
+
+@router.post("/{rule_id}/recalculate", response_model=RuleRecalculateResponse)
+def recalculate_rule_across_cases(
+    rule_id: int,
+    admin_user: User = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> RuleRecalculateResponse:
+    """Recalculate open, non-overridden deadlines on active cases affected by ``rule_id``."""
+    rule = session.get(DeadlineRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Deadline rule not found")
+
+    stats = recalculate_rule_deadlines(session, rule)
+    record_audit_log(
+        session,
+        actor_user_id=admin_user.id,
+        action="rule.recalculate",
+        entity_type="deadline_rule",
+        entity_id=rule.id,
+        detail={"rule_code": rule.rule_code, **stats},
+    )
+    session.commit()
+    return RuleRecalculateResponse(
+        rule_id=rule.id or rule_id,
+        rule_code=rule.rule_code,
+        **stats,
+    )

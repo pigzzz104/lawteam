@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.core.security import hash_password
 from app.models.entities import (
+    AutoTriagePolicy,
     CaseCategory,
     DeadlineRule,
     HolidayRollMode,
@@ -152,7 +153,68 @@ def seed_deadline_rules(session: Session) -> int:
     return inserted
 
 
+DEFAULT_AUTO_TRIAGE_POLICIES = [
+    {
+        "policy_key": "invoice_archive",
+        "label": "电子发票与数电票",
+        "description": "匹配到唯一案件（含唯一企业简称）的发票默认自动归档至「05_财务与发票」；多案件重名或未取回文件时转人工确认。",
+        "mode": "auto_archive",
+        "sort_order": 1,
+    },
+    {
+        "policy_key": "judgment_ruling_doc",
+        "label": "裁判与裁决类文书（判决书/裁定书/仲裁裁决/复议决定）",
+        "description": "精确匹配案号且存在启用期限规则时，默认自动归档文书、推进阶段并生成上诉/异议/撤裁死线；设为人工复核可要求二次确认。",
+        "mode": "auto_archive",
+        "sort_order": 2,
+    },
+    {
+        "policy_key": "hearing_notice",
+        "label": "开庭传票与庭审时间通知",
+        "description": "精确匹配案号且识别到明确开庭时间时，默认自动归档文书并写入团队与个人日历日程。",
+        "mode": "auto_archive",
+        "sort_order": 3,
+    },
+    {
+        "policy_key": "procedural_deadline_doc",
+        "label": "其他触发法定期限文书（起诉状/举证通知/刑拘逮捕/执行通知）",
+        "description": "精确匹配案号且命中期限规则时自动归档与派生期限；若举证通知为扫描件且未提取天数则自动转人工核对。",
+        "mode": "auto_archive",
+        "sort_order": 4,
+    },
+    {
+        "policy_key": "routine_doc",
+        "label": "常规无死线程序文书（缴费通知/签收回执等）",
+        "description": "精确匹配案号且已取回文书附件时，默认自动归档至「01_司法与程序文书」。",
+        "mode": "auto_archive",
+        "sort_order": 5,
+    },
+    {
+        "policy_key": "noise_other_sms",
+        "label": "非涉案杂项与营销通知短信",
+        "description": "未匹配司法链接、发票链接、案号或程序关键词的杂项短信，默认自动忽略降噪；设为人工复核则在收件箱保留核验。",
+        "mode": "auto_archive",
+        "sort_order": 6,
+    },
+]
+
+
+def seed_auto_triage_policies(session: Session) -> int:
+    """Idempotently create default auto-triage policy toggles without overwriting user edits."""
+    existing_keys = set(session.exec(select(AutoTriagePolicy.policy_key)).all())
+    inserted = 0
+    for spec in DEFAULT_AUTO_TRIAGE_POLICIES:
+        if spec["policy_key"] in existing_keys:
+            continue
+        session.add(AutoTriagePolicy(**spec))
+        inserted += 1
+    if inserted > 0:
+        session.commit()
+    return inserted
+
+
 def bootstrap_database(session: Session) -> None:
     """Run all idempotent startup seeders."""
     seed_demo_users(session)
     seed_deadline_rules(session)
+    seed_auto_triage_policies(session)

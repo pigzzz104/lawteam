@@ -1,5 +1,6 @@
 from app.models.entities import (
     AuditLog,
+    AutoTriagePolicy,
     Case,
     CaseCategory,
     CaseEvent,
@@ -23,6 +24,7 @@ from app.models.entities import (
 
 __all__ = [
     "AuditLog",
+    "AutoTriagePolicy",
     "Case",
     "CaseCategory",
     "CaseEvent",

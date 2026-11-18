@@ -170,14 +170,14 @@ export const TRIAGE_STATUS_META: Record<
 
 export const EVENT_TYPE_PRESETS: Array<{ value: string; label: string; categories?: CaseCategory[] }> = [
   { value: "judgment_served", label: "判决书送达（触发民事15日 / 涉外30日 / 刑事10日 / 行政15日上诉期）", categories: ["civil", "criminal", "administrative"] },
-  { value: "ruling_served", label: "裁定书送达（触发民事10日 / 刑事5日 / 行政10日上诉期）", categories: ["civil", "criminal", "administrative"] },
+  { value: "ruling_served", label: "裁定书送达（触发民事10日 / 刑事5日 / 行政10日 / 执行复议10日）", categories: ["civil", "criminal", "administrative", "enforcement"] },
   { value: "pleading_served", label: "起诉状/仲裁申请书副本送达（触发答辩期与管辖异议期）", categories: ["civil", "administrative", "labor_arbitration"] },
   { value: "evidence_notice_served", label: "举证通知书送达（触发民事举证期限）", categories: ["civil"] },
   { value: "judgment_effective", label: "终审判决生效（触发民事6个月再审申请期）", categories: ["civil"] },
-  { value: "performance_expired", label: "履行期限届满（触发民事2年申请强制执行期）", categories: ["civil"] },
+  { value: "performance_expired", label: "履行期限届满（触发民事/执行和解2年申请执行期）", categories: ["civil", "enforcement"] },
   { value: "preservation_bank_done", label: "银行存款冻结完成（触发1年续冻提醒）", categories: ["civil", "enforcement"] },
-  { value: "preservation_movable_done", label: "动产查封扣押完成（触发2年续封提醒）", categories: ["civil"] },
-  { value: "preservation_real_estate_done", label: "不动产/股权查封完成（触发3年续封提醒）", categories: ["civil"] },
+  { value: "preservation_movable_done", label: "动产查封扣押完成（触发2年续封提醒）", categories: ["civil", "enforcement"] },
+  { value: "preservation_real_estate_done", label: "不动产/股权查封完成（触发3年续封提醒）", categories: ["civil", "enforcement"] },
   { value: "detention_notified", label: "刑事拘留起始（触发48h会见窗口与37天批捕盯防）", categories: ["criminal"] },
   { value: "case_transferred_arrest", label: "公安提请批准逮捕（触发检察院7日审查批捕期）", categories: ["criminal"] },
   { value: "arrest_executed", label: "逮捕执行（触发2个月侦查羁押期限）", categories: ["criminal"] },
@@ -186,6 +186,13 @@ export const EVENT_TYPE_PRESETS: Array<{ value: string; label: string; categorie
   { value: "admin_act_known", label: "知道/应当知道行政行为（触发60日复议 / 6个月起诉期）", categories: ["administrative"] },
   { value: "reconsideration_decision_served", label: "行政复议决定书送达（触发15日起诉期）", categories: ["administrative"] },
   { value: "arbitration_award_served", label: "仲裁裁决书送达（劳仲15日起诉 / 商仲3个月撤裁）", categories: ["labor_arbitration", "commercial_arb"] },
+  { value: "enforcement_notice_served", label: "执行通知书/报告财产令送达（触发10日核验节点）", categories: ["enforcement"] },
+  { value: "enforcement_objection_served", label: "执行异议裁定书送达（触发15日执行异议之诉期）", categories: ["enforcement"] },
+  { value: "enforcement_settlement_signed", label: "执行和解协议签署（触发30日履行进度跟踪）", categories: ["enforcement"] },
+  { value: "retainer_started", label: "常年法律顾问服务起算（触发1年到期续签提醒）", categories: ["non_litigation"] },
+  { value: "project_milestone_started", label: "非诉尽调/专项成果节点起算（触发15日交付核验）", categories: ["non_litigation"] },
+  { value: "payment_notice_issued", label: "非诉项目阶段请款单发出（触发30日回款跟进）", categories: ["non_litigation"] },
+  { value: "contract_review_requested", label: "法顾日常合同审查收件（触发3日反馈SLA期限）", categories: ["non_litigation"] },
 ];
 
 export const EVENT_TYPE_LABELS: Record<string, string> = {
@@ -206,6 +213,13 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   admin_act_known: "知道行政行为",
   reconsideration_decision_served: "行政复议决定书送达",
   arbitration_award_served: "仲裁裁决书送达",
+  enforcement_notice_served: "执行通知书/报告财产令送达",
+  enforcement_objection_served: "执行异议裁定书送达",
+  enforcement_settlement_signed: "执行和解协议签署",
+  retainer_started: "常年法顾服务起算",
+  project_milestone_started: "非诉项目交付节点起算",
+  payment_notice_issued: "非诉阶段请款单发出",
+  contract_review_requested: "法顾合同审查收件",
 };
 
 export function getEventTypeLabel(eventType: string): string {

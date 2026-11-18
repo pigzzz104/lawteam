@@ -1,5 +1,7 @@
 import type {
   AuditLogRead,
+  AutoTriagePolicy,
+  AutoTriagePolicyMode,
   CalendarResponse,
   CaseCategory,
   CaseDetailRead,
@@ -21,6 +23,7 @@ import type {
   ReminderDelivery,
   ReminderSweepResponse,
   RiskLevel,
+  RuleRecalculateResponse,
   ScheduleItem,
   StageTemplatesPayload,
   SystemRole,
@@ -235,6 +238,17 @@ export const rulesApi = {
   remove: (ruleId: number) =>
     apiFetch<void>(`/api/rules/${ruleId}`, {
       method: "DELETE",
+    }),
+  recalculate: (ruleId: number) =>
+    apiFetch<RuleRecalculateResponse>(`/api/rules/${ruleId}/recalculate`, {
+      method: "POST",
+    }),
+  autoTriagePolicies: () =>
+    apiFetch<AutoTriagePolicy[]>("/api/rules/auto-triage-policies"),
+  updateAutoTriagePolicy: (policyKey: string, mode: AutoTriagePolicyMode) =>
+    apiFetch<AutoTriagePolicy>(`/api/rules/auto-triage-policies/${encodeURIComponent(policyKey)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ mode }),
     }),
 };
 

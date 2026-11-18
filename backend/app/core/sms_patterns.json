@@ -128,7 +128,9 @@
   },
   "event_type_keywords": {
     "judgment_served": ["民事判决书", "刑事判决书", "行政判决书", "一审判决书", "判决书"],
-    "ruling_served": ["民事裁定书", "刑事裁定书", "行政裁定书", "裁定书"],
+    "enforcement_objection_served": ["执行异议裁定书", "驳回执行异议", "执行异议审查"],
+    "enforcement_notice_served": ["执行通知书", "报告财产令", "限期履行通知书"],
+    "ruling_served": ["民事裁定书", "刑事裁定书", "行政裁定书", "执行裁定书", "裁定书"],
     "evidence_notice_served": ["举证通知书", "举证期限通知书"],
     "pleading_served": ["起诉状副本", "上诉状副本", "仲裁申请书副本", "应诉通知书"],
     "arbitration_award_served": ["仲裁裁决书", "裁决书"],
