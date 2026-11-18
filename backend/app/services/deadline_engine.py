@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import calendar
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Any, Optional
+
+import chinese_calendar
+from sqlmodel import Session, select
+
+from app.models.entities import (
+    Case,
+    CaseEvent,
+    Deadline,
+    DeadlineRule,
+    HolidayRollMode,
+    NotifyTargetType,
+)
+
+
+@dataclass(frozen=True)
+class DeadlineCalculation:
+    """Deterministic breakdown of a legal deadline calculation."""
+
+    base_date: date
+    raw_due_date: date
+    due_date: date
+    effective_duration_value: int
+    roll_reason: Optional[str] = None
+
+
+def is_china_workday(target_date: date) -> tuple[bool, Optional[str], bool]:
+    """
+    Determine whether ``target_date`` is an official PRC workday.
+
+    Returns ``(is_workday, holiday_name, used_weekend_fallback)``.
+    Official make-up workdays (补班, e.g. 2026-02-14 Saturday) return ``True``.
+    """
+    try:
+        is_holiday_flag, holiday_name = chinese_calendar.get_holiday_detail(target_date)
+        workday_flag = chinese_calendar.is_workday(target_date)
+        if not workday_flag and not is_holiday_flag and holiday_name is None:
+            holiday_name = "周末"
+        return workday_flag, holiday_name, False
+    except NotImplementedError:
+        is_wkday = target_date.weekday() < 5
+        return is_wkday, None if is_wkday else "周末(超出节假日表年份)", True
+
+
+def add_months_clamped(base: date, months: int) -> date:
+    """
+    Add calendar months with month-end clamping (民法典§202 / 刑诉法解释§202).
+
+    Example: ``2026-01-31 + 1 month -> 2026-02-28``.
+    """
+    total_months = (base.month - 1) + months
+    target_year = base.year + (total_months // 12)
+    target_month = (total_months % 12) + 1
+    last_day = calendar.monthrange(target_year, target_month)[1]
+    return date(target_year, target_month, min(base.day, last_day))
+
+
+def add_years_clamped(base: date, years: int) -> date:
+    """Add calendar years with leap-day clamping (e.g. Feb 29 -> Feb 28 in non-leap year)."""
+    target_year = base.year + years
+    last_day = calendar.monthrange(target_year, base.month)[1]
+    return date(target_year, base.month, min(base.day, last_day))
+
+
+def compute_base_date(event_date: date, service_method: str) -> tuple[date, Optional[str]]:
+    """Shift base date when service is via public announcement (公告送达)."""
+    method = (service_method or "electronic").strip().lower()
+    if method == "announcement_30":
+        shifted = event_date + timedelta(days=30)
+        return shifted, f"公告送达(30日)满视为送达，起算基准日推至 {shifted.isoformat()}"
+    if method == "announcement_60":
+        shifted = event_date + timedelta(days=60)
+        return shifted, f"涉外公告送达(60日)满视为送达，起算基准日推至 {shifted.isoformat()}"
+    return event_date, None
+
+
+def calculate_due_date(
+    *,
+    event_date: date,
+    duration_value: int,
+    duration_unit: str,
+    holiday_roll_mode: HolidayRollMode,
+    service_method: str = "electronic",
+    authority_specified_days: Optional[int] = None,
+) -> DeadlineCalculation:
+    """
+    Calculate a legal deadline deterministically in pure Python.
+
+    No LLM calls or heuristics are ever used here.
+    """
+    notes: list[str] = []
+    base_date, service_note = compute_base_date(event_date, service_method)
+    if service_note:
+        notes.append(service_note)
+
+    unit = (duration_unit or "days").strip().lower()
+    effective_value = duration_value
+    if (
+        authority_specified_days is not None
+        and authority_specified_days > 0
+        and unit == "days"
+    ):
+        effective_value = authority_specified_days
+        if effective_value != duration_value:
+            notes.append(f"采用办案机关特别指定天数 {effective_value} 日")
+
+    if unit == "days":
+        raw_due_date = base_date + timedelta(days=effective_value)
+    elif unit == "months":
+        raw_due_date = add_months_clamped(base_date, effective_value)
+    elif unit == "years":
+        raw_due_date = add_years_clamped(base_date, effective_value)
+    else:
+        raise ValueError(f"Unsupported duration_unit: {duration_unit}")
+
+    due_date = raw_due_date
+    raw_is_workday, raw_label, _ = is_china_workday(raw_due_date)
+
+    if holiday_roll_mode == HolidayRollMode.ROLL_FORWARD_WORKDAY:
+        if raw_is_workday:
+            if raw_due_date.weekday() >= 5:
+                notes.append(
+                    f"到期日 {raw_due_date.isoformat()} 为法定调休补班工作日，依法不顺延"
+                )
+        else:
+            cursor = raw_due_date
+            for _ in range(60):
+                is_wk, _, _ = is_china_workday(cursor)
+                if is_wk:
+                    due_date = cursor
+                    break
+                cursor += timedelta(days=1)
+            label_desc = raw_label or "非工作日"
+            notes.append(
+                f"原到期日 {raw_due_date.isoformat()}（{label_desc}），"
+                f"依法顺延至首个工作日 {due_date.isoformat()}"
+            )
+    elif holiday_roll_mode == HolidayRollMode.NO_ROLL_CUSTODY:
+        notes.append("刑事在押期间依法不因节假日顺延（刑诉法第105条第3款）")
+    elif holiday_roll_mode == HolidayRollMode.CALENDAR_EXACT:
+        notes.append("自然日精确到期，不顺延")
+
+    return DeadlineCalculation(
+        base_date=base_date,
+        raw_due_date=raw_due_date,
+        due_date=due_date,
+        effective_duration_value=effective_value,
+        roll_reason="；".join(notes) if notes else None,
+    )
+
+
+def _match_condition_entry(case: Case, key: str, expected: Any) -> bool:
+    negated = key.endswith("_not")
+    field_name = key[:-4] if negated else key
+    actual = getattr(case, field_name, None)
+
+    if negated:
+        if isinstance(expected, list):
+            return actual not in expected
+        return actual != expected
+
+    if isinstance(expected, list):
+        return actual in expected
+    return actual == expected
+
+
+def rule_matches_case(rule: DeadlineRule, case: Case) -> bool:
+    """Enforce procedure-category and case-attribute isolation for deadline rules."""
+    if not rule.is_enabled:
+        return False
+    if rule.case_category != case.case_category:
+        return False
+    conditions = rule.condition_match or {}
+    for key, expected in conditions.items():
+        if not _match_condition_entry(case, key, expected):
+            return False
+    return True
+
+
+def derive_deadlines_for_event(
+    session: Session, case: Case, event: CaseEvent
+) -> list[Deadline]:
+    """
+    Derive or recalculate statutory deadlines for ``event`` on ``case``.
+
+    Protects any existing Deadline with ``is_manual_override=True`` from being
+    overwritten.
+    """
+    if case.id is None or event.id is None:
+        raise ValueError("Case and CaseEvent must be persisted before deriving deadlines")
+
+    candidate_rules = list(
+        session.exec(
+            select(DeadlineRule)
+            .where(
+                DeadlineRule.case_category == case.case_category,
+                DeadlineRule.trigger_event_type == event.event_type,
+                DeadlineRule.is_enabled == True,  # noqa: E712
+            )
+            .order_by(DeadlineRule.id)
+        ).all()
+    )
+
+    matching_rules = [rule for rule in candidate_rules if rule_matches_case(rule, case)]
+
+    existing_rows = list(
+        session.exec(
+            select(Deadline).where(
+                Deadline.case_id == case.id,
+                Deadline.source_event_id == event.id,
+            )
+        ).all()
+    )
+    existing_by_code = {row.rule_code: row for row in existing_rows}
+
+    derived: list[Deadline] = []
+    for rule in matching_rules:
+        calc = calculate_due_date(
+            event_date=event.event_date,
+            duration_value=rule.duration_value,
+            duration_unit=rule.duration_unit,
+            holiday_roll_mode=rule.holiday_roll_mode,
+            service_method=event.service_method,
+            authority_specified_days=event.authority_specified_days,
+        )
+
+        existing = existing_by_code.get(rule.rule_code)
+        if existing is not None:
+            # Iron Rule #1: Manual overrides are immutable to automatic recalculation.
+            if not existing.is_manual_override and not existing.is_completed:
+                existing.title = rule.name
+                existing.legal_basis = rule.legal_basis
+                existing.base_date = calc.base_date
+                existing.raw_due_date = calc.raw_due_date
+                existing.due_date = calc.due_date
+                existing.holiday_roll_mode = rule.holiday_roll_mode
+                existing.roll_reason = calc.roll_reason
+                existing.risk_level = rule.risk_level
+                session.add(existing)
+            derived.append(existing)
+            continue
+
+        deadline = Deadline(
+            case_id=case.id,
+            source_event_id=event.id,
+            rule_code=rule.rule_code,
+            title=rule.name,
+            legal_basis=rule.legal_basis,
+            base_date=calc.base_date,
+            raw_due_date=calc.raw_due_date,
+            due_date=calc.due_date,
+            holiday_roll_mode=rule.holiday_roll_mode,
+            roll_reason=calc.roll_reason,
+            risk_level=rule.risk_level,
+            is_manual_override=False,
+            is_completed=False,
+            notify_target_type=NotifyTargetType.CASE_TEAM,
+            custom_notify_user_ids=[],
+            escalate_to_supervisor=True,
+            reminder_offsets_days=list(rule.default_offsets_days or [7, 3, 1, 0]),
+            personal_custom_alerts=[],
+        )
+        session.add(deadline)
+        derived.append(deadline)
+
+    session.flush()
+    return derived

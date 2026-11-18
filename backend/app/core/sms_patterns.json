@@ -1,0 +1,130 @@
+{
+  "_source": "Ported from REF-SKILLHUB (legal-skillhub/skills/litigation-hub/references/sms-patterns.json) and extended for 12309 procuratorate, police/detention, arbitration, and e-invoice SMS",
+  "download_link_patterns": [
+    {
+      "domain": "zxfw.court.gov.cn",
+      "canonical_domain": "zxfw.court.gov.cn",
+      "tier": 1,
+      "description": "全国法院统一送达平台",
+      "pattern": "https?://[^\\s/]+/zxfw/#/pagesAjkj/app/wssd/index\\?[^\\s]*",
+      "required_params": ["qdbh", "sdbh", "sdsin"],
+      "download_strategy": "api_first",
+      "api": {
+        "endpoint": "https://zxfw.court.gov.cn/yzw/yzw-zxfw-sdfw/api/v1/sdfw/getWsListBySdbhNew",
+        "method": "POST",
+        "content_type": "application/json",
+        "request_body": { "qdbh": "{qdbh}", "sdbh": "{sdbh}", "sdsin": "{sdsin}" },
+        "response_fields": {
+          "court_name": "data[].c_fymc",
+          "court_id": "data[].c_fybh",
+          "document_name": "data[].c_wsmc",
+          "document_id": "data[].c_wsbh",
+          "download_url": "data[].wjlj",
+          "file_format": "data[].c_wjgs",
+          "create_time": "data[].dt_cjsj"
+        }
+      }
+    },
+    {
+      "domain": "sd.gdems.com",
+      "canonical_domain": "sd.gdems.com",
+      "tier": 2,
+      "description": "广东法院电子送达平台",
+      "pattern": "https?://[^\\s/]+/v3/dzsd/[a-zA-Z0-9]+",
+      "required_params": [],
+      "download_strategy": "playwright"
+    },
+    {
+      "domain": "jysd.10102368.com",
+      "canonical_domain": "jysd.10102368.com",
+      "tier": 2,
+      "description": "邮政集约送达平台",
+      "pattern": "https?://[^\\s/]+/sd\\?key=[a-zA-Z0-9_\\-]+",
+      "required_params": ["key"],
+      "download_strategy": "playwright"
+    },
+    {
+      "domain": "dzsd.hbfy.gov.cn",
+      "canonical_domain": "dzsd.hbfy.gov.cn",
+      "tier": 2,
+      "description": "湖北法院电子送达平台",
+      "pattern": "https?://[^\\s/]+/(?:hb/msg=[a-zA-Z0-9]+|sfsddz\\b)",
+      "required_params": [],
+      "download_strategy": "api_or_playwright"
+    },
+    {
+      "domain": "sfpt.cdfy12368.gov.cn",
+      "canonical_domain": "sfpt.cdfy12368.gov.cn",
+      "alias_domains": ["171.106.48.55:28083"],
+      "tier": 2,
+      "description": "司法送达网（成都/广西等法院）",
+      "pattern": "https?://[^\\s/]+/sfsdw//?r/[a-zA-Z0-9]+",
+      "required_params": [],
+      "download_strategy": "playwright"
+    }
+  ],
+  "invoice_link_patterns": [
+    {
+      "provider": "nuonuo",
+      "description": "诺诺网电子发票短链",
+      "pattern": "https?://(?:nnfp\\.jss\\.com\\.cn|inv\\.jss\\.com\\.cn|fp\\.nuonuo\\.com|s\\.nuonuo\\.com)[^\\s]+"
+    },
+    {
+      "provider": "baiwang",
+      "description": "百望云电子发票链接",
+      "pattern": "https?://[^\\s]*(?:baiwang\\.com|bwfapiao\\.com)[^\\s]*"
+    },
+    {
+      "provider": "chinatax",
+      "description": "全国统一规范电子发票/税局数电票",
+      "pattern": "https?://[^\\s]*(?:etax\\.[^\\s]+\\.gov\\.cn|dppt\\.[^\\s]+\\.gov\\.cn|fapiao\\.chinatax\\.gov\\.cn)[^\\s]*"
+    }
+  ],
+  "case_number_pattern": "[（(〔\\[]\\d{4}[）)\\]〕]\\s*[\\u4e00-\\u9fa5]{1,12}\\d*[\\u4e00-\\u9fa5]{1,8}\\d+号",
+  "extraction_code_patterns": [
+    "(?:提取码|验证码|查收码|取件码|密码)[：:\\s]*([0-9A-Za-z]{4,8})"
+  ],
+  "agency_patterns": [
+    "([\\u4e00-\\u9fa5]{2,20}(?:高级|中级|基层|铁路运输|海事|知识产权|金融|互联网)?人民法院)",
+    "([\\u4e00-\\u9fa5]{2,20}(?:人民)?检察院)",
+    "([\\u4e00-\\u9fa5]{2,20}(?:公安局(?:[\\u4e00-\\u9fa5]{1,10}分局)?|看守所))",
+    "([\\u4e00-\\u9fa5]{2,20}(?:劳动人事争议)?仲裁委员会)"
+  ],
+  "hearing_time_patterns": [
+    "(\\d{4}[-/年]\\d{1,2}[-/月]\\d{1,2}日?\\s*(?:上午|下午)?\\s*\\d{1,2}[:时点]\\d{0,2}(?:分)?)"
+  ],
+  "sms_category_rules": {
+    "invoice": ["发票", "电子发票", "数电票", "诺诺", "百望", "开票", "价税合计", "发票代码", "发票号码"],
+    "procuratorate_12309": ["12309", "检察院", "检刑诉", "检刑捕", "审查起诉", "审查逮捕", "认罪认罚", "人民检察院"],
+    "detention_police": ["看守所", "公安局", "拘留", "拘通字", "逮捕", "取保候审", "提请批捕", "提讯"],
+    "arbitration": ["仲裁委", "劳人仲", "劳动人事争议", "仲裁庭", "仲裁裁决", "仲裁申请书"],
+    "court_service": ["12368", "法院", "人民法院", "电子送达", "送达平台", "传票", "开庭", "判决书", "裁定书", "zxfw.court.gov.cn", "受理通知书"]
+  },
+  "case_category_keywords": {
+    "criminal": ["刑初", "刑终", "刑再", "刑申", "检刑诉", "检刑捕", "拘通字", "逮捕", "看守所", "12309", "审查逮捕", "审查起诉", "认罪认罚", "取保候审"],
+    "administrative": ["行初", "行终", "行再", "行申", "行赔", "行政复议", "行政诉讼"],
+    "labor_arbitration": ["劳人仲", "劳动人事争议", "劳动争议仲裁"],
+    "commercial_arb": ["贸仲", "仲字", "仲裁委员会", "商事仲裁"],
+    "enforcement": ["执保", "执异", "执恢", "执复", "首次执行", "执\\d+号"],
+    "civil": ["民初", "民终", "民再", "民申", "知民", "商初", "诉前调"]
+  },
+  "event_type_keywords": {
+    "judgment_served": ["民事判决书", "刑事判决书", "行政判决书", "一审判决书", "判决书"],
+    "ruling_served": ["民事裁定书", "刑事裁定书", "行政裁定书", "裁定书"],
+    "evidence_notice_served": ["举证通知书", "举证期限通知书"],
+    "pleading_served": ["起诉状副本", "上诉状副本", "仲裁申请书副本", "应诉通知书"],
+    "arbitration_award_served": ["仲裁裁决书", "裁决书"],
+    "reconsideration_decision_served": ["行政复议决定书", "复议决定书"],
+    "detention_notified": ["拘留通知书", "刑事拘留", "拘通字"],
+    "case_transferred_arrest": ["提请批准逮捕", "移送审查逮捕", "审查批捕"],
+    "arrest_executed": ["逮捕通知书", "执行逮捕", "宣布逮捕"],
+    "prosecution_review_started": ["移送审查起诉", "审查起诉阶段", "起诉意见书"],
+    "hearing_scheduled": ["传票", "开庭传票", "开庭通知", "庭审时间", "出庭通知书"]
+  },
+  "party_exclude_keywords": [
+    "法院", "人民法院", "检察院", "公安局", "看守所", "仲裁委",
+    "书记员", "法官", "审判员", "执行员", "检察官",
+    "系统", "平台", "服务", "通知", "短信", "案件", "纠纷", "争议",
+    "你好", "您好", "收到", "查收", "下载", "链接", "请于", "联系", "验证码", "提取码"
+  ]
+}

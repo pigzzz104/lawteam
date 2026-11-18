@@ -1,0 +1,35 @@
+# Reference open-source repositories (Phase 0)
+.ref_repos/
+
+# Environment & local secrets
+.env
+.env.local
+.env.*.local
+
+# Local case storage & runtime logs
+data/
+cases_data/
+*.log
+
+# Python
+.venv/
+backend/.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/

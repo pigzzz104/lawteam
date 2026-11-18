@@ -1,0 +1,504 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+
+    /* Material Design 3 Color Roles (Legal Cobalt / Slate Tonal System) */
+    --md-sys-color-primary: #1b56b3;
+    --md-sys-color-on-primary: #ffffff;
+    --md-sys-color-primary-container: #d8e2ff;
+    --md-sys-color-on-primary-container: #001a41;
+
+    --md-sys-color-secondary: #535e78;
+    --md-sys-color-on-secondary: #ffffff;
+    --md-sys-color-secondary-container: #d7e2f8;
+    --md-sys-color-on-secondary-container: #0f1b33;
+
+    --md-sys-color-tertiary: #0b6b5c;
+    --md-sys-color-tertiary-container: #cceae3;
+    --md-sys-color-on-tertiary-container: #00201b;
+
+    --md-sys-color-error: #b3261e;
+    --md-sys-color-on-error: #ffffff;
+    --md-sys-color-error-container: #fde7e5;
+    --md-sys-color-on-error-container: #410e0b;
+
+    --md-sys-color-surface: #f7f9fc;
+    --md-sys-color-surface-container-lowest: #ffffff;
+    --md-sys-color-surface-container-low: #eff3f9;
+    --md-sys-color-surface-container: #e8edf5;
+    --md-sys-color-surface-container-high: #e1e7f0;
+    --md-sys-color-surface-container-highest: #dbe1eb;
+
+    --md-sys-color-on-surface: #181c23;
+    --md-sys-color-on-surface-variant: #434955;
+    --md-sys-color-outline: #6c7484;
+    --md-sys-color-outline-variant: #cdd5e2;
+    --md-sys-color-scrim: rgb(15 23 42 / 0.44);
+
+    /* Material Design 3 Shape Scale */
+    --md-sys-shape-corner-xs: 0.5rem;
+    --md-sys-shape-corner-sm: 0.75rem;
+    --md-sys-shape-corner-md: 1rem;
+    --md-sys-shape-corner-lg: 1.25rem;
+    --md-sys-shape-corner-xl: 1.75rem;
+    --md-sys-shape-corner-full: 9999px;
+
+    /* Material Design 3 Motion Tokens */
+    --md-sys-motion-easing-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+    --md-sys-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+    --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+    --md-sys-motion-duration-short: 200ms;
+    --md-sys-motion-duration-medium: 320ms;
+  }
+
+  body {
+    background-color: var(--md-sys-color-surface);
+    color: var(--md-sys-color-on-surface);
+    line-height: 1.5;
+    text-align: start;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1,
+  h2,
+  h3,
+  th {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--md-sys-color-primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .lt-card {
+    border-radius: var(--md-sys-shape-corner-lg);
+    border: 1px solid color-mix(in oklab, var(--md-sys-color-outline-variant) 78%, transparent);
+    background-color: var(--md-sys-color-surface-container-lowest);
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 0.04),
+      0 2px 6px rgb(15 23 42 / 0.03);
+  }
+
+  .lt-surface-tonal {
+    border-radius: var(--md-sys-shape-corner-md);
+    border: 1px solid color-mix(in oklab, var(--md-sys-color-outline-variant) 65%, transparent);
+    background-color: var(--md-sys-color-surface-container-low);
+  }
+
+  .lt-btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-55;
+    border-radius: var(--md-sys-shape-corner-full);
+    background-color: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+    box-shadow: 0 1px 2px rgb(27 86 179 / 0.24);
+    transition:
+      background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-btn-primary:hover:not(:disabled) {
+    background-color: #16499a;
+    box-shadow: 0 2px 6px rgb(27 86 179 / 0.3);
+  }
+
+  .lt-btn-accent {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-55;
+    border-radius: var(--md-sys-shape-corner-full);
+    background-color: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    transition:
+      background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-btn-accent:hover:not(:disabled) {
+    background-color: #c7d5f0;
+  }
+
+  .lt-btn-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-55;
+    border-radius: var(--md-sys-shape-corner-full);
+    border: 1px solid var(--md-sys-color-outline);
+    background-color: var(--md-sys-color-surface-container-lowest);
+    color: var(--md-sys-color-on-surface);
+    transition:
+      background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-btn-secondary:hover:not(:disabled) {
+    background-color: var(--md-sys-color-surface-container-low);
+  }
+
+  .lt-btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-55;
+    border-radius: var(--md-sys-shape-corner-full);
+    border: 1px solid #f2b8b5;
+    background-color: var(--md-sys-color-error-container);
+    color: var(--md-sys-color-on-error-container);
+    transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-btn-danger:hover:not(:disabled) {
+    background-color: #fad3cf;
+  }
+
+  .lt-input {
+    @apply w-full px-3.5 py-2 text-sm placeholder:text-slate-400 focus:outline-none;
+    border-radius: var(--md-sys-shape-corner-sm);
+    border: 1px solid var(--md-sys-color-outline);
+    background-color: var(--md-sys-color-surface-container-lowest);
+    color: var(--md-sys-color-on-surface);
+    transition:
+      border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-input:focus {
+    border-color: var(--md-sys-color-primary);
+    box-shadow: 0 0 0 2px rgb(27 86 179 / 0.16);
+  }
+
+  .lt-segmented {
+    @apply inline-flex flex-wrap items-center gap-1 p-1;
+    border-radius: var(--md-sys-shape-corner-full);
+    background-color: var(--md-sys-color-surface-container);
+  }
+
+  .lt-chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold;
+    border-radius: var(--md-sys-shape-corner-full);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background-color: var(--md-sys-color-surface-container-lowest);
+    color: var(--md-sys-color-on-surface-variant);
+    transition:
+      background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+
+  .lt-chip:hover {
+    background-color: var(--md-sys-color-surface-container-low);
+    color: var(--md-sys-color-on-surface);
+  }
+
+  .lt-chip-active {
+    border-color: transparent;
+    background-color: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+  }
+
+  .lt-chip-active:hover {
+    background-color: #c7d5f0;
+  }
+
+  .lt-alert-success {
+    border-radius: var(--md-sys-shape-corner-md);
+    border: 1px solid #a7dfca;
+    background-color: #e4f6ee;
+    color: #0b4a36;
+    @apply px-4 py-3 text-xs font-medium;
+  }
+
+  .lt-alert-error {
+    border-radius: var(--md-sys-shape-corner-md);
+    border: 1px solid #f2b8b5;
+    background-color: var(--md-sys-color-error-container);
+    color: var(--md-sys-color-on-error-container);
+    @apply px-4 py-3 text-xs font-medium;
+  }
+}
+
+/* Desktop collapsible sidebar / M3 Navigation Rail transition */
+.lt-sidebar {
+  transition-property: width, inline-size;
+  transition-duration: var(--md-sys-motion-duration-medium);
+  transition-timing-function: var(--md-sys-motion-easing-emphasized);
+}
+
+.lt-sidebar-label {
+  transition:
+    opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+    transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lt-sidebar,
+  .lt-sidebar-label {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* Native <dialog> modal backdrop, scroll containment & top-layer entry/exit animation */
+dialog.lt-modal {
+  overscroll-behavior: contain;
+  margin: auto;
+  max-inline-size: calc(100vw - 2rem);
+  max-block-size: calc(100dvh - 2rem);
+  border-radius: var(--md-sys-shape-corner-xl);
+  border: 1px solid color-mix(in oklab, var(--md-sys-color-outline-variant) 85%, transparent);
+  background-color: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.24s;
+  transition-timing-function: var(--md-sys-motion-easing-emphasized);
+  transition-behavior: allow-discrete;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.lt-modal {
+    transform: translateY(10px) scale(0.97);
+  }
+}
+
+dialog.lt-modal:is([open]):where(:not([data-closing])) {
+  opacity: 1;
+}
+
+@starting-style {
+  dialog.lt-modal:is([open]):where(:not([data-closing])) {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.lt-modal:is([open]):where(:not([data-closing])) {
+    transform: translateY(0) scale(1);
+  }
+
+  @starting-style {
+    dialog.lt-modal:is([open]):where(:not([data-closing])) {
+      transform: translateY(10px) scale(0.97);
+    }
+  }
+}
+
+dialog.lt-modal::backdrop {
+  background-color: rgb(15 23 42 / 0);
+  backdrop-filter: blur(0px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  transition-property: background-color, backdrop-filter, display, overlay;
+  transition-duration: 0.24s;
+  transition-timing-function: var(--md-sys-motion-easing-standard);
+  transition-behavior: allow-discrete;
+}
+
+dialog.lt-modal:is([open]):where(:not([data-closing]))::backdrop {
+  background-color: var(--md-sys-color-scrim);
+  backdrop-filter: blur(3px);
+}
+
+@starting-style {
+  dialog.lt-modal:is([open]):where(:not([data-closing]))::backdrop {
+    background-color: rgb(15 23 42 / 0);
+    backdrop-filter: blur(0px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog.lt-modal,
+  dialog.lt-modal::backdrop {
+    transition-duration: 0.12s;
+  }
+}
+
+/* Native <dialog> MD3 Mobile Navigation Drawer with slide + scrim animations */
+dialog.lt-drawer {
+  inset: 0;
+  inline-size: 100dvw;
+  block-size: 100dvh;
+  max-inline-size: none;
+  max-block-size: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  transition-property: display, overlay;
+  transition-duration: 0.3s;
+  transition-behavior: allow-discrete;
+}
+
+dialog.lt-drawer::backdrop {
+  background-color: rgb(15 23 42 / 0);
+  backdrop-filter: blur(0px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  transition-property: background-color, backdrop-filter, display, overlay;
+  transition-duration: 0.3s;
+  transition-timing-function: var(--md-sys-motion-easing-standard);
+  transition-behavior: allow-discrete;
+}
+
+dialog.lt-drawer:is([open]):where(:not([data-closing]))::backdrop {
+  background-color: var(--md-sys-color-scrim);
+  backdrop-filter: blur(2px);
+}
+
+@starting-style {
+  dialog.lt-drawer:is([open]):where(:not([data-closing]))::backdrop {
+    background-color: rgb(15 23 42 / 0);
+    backdrop-filter: blur(0px);
+  }
+}
+
+.lt-drawer-sheet {
+  inline-size: min(17.5rem, 84dvw);
+  block-size: 100dvh;
+  border-start-end-radius: var(--md-sys-shape-corner-xl);
+  border-end-end-radius: var(--md-sys-shape-corner-xl);
+  overflow: hidden;
+  opacity: 0;
+  transition-property: opacity, transform;
+  transition-duration: 0.3s;
+  transition-timing-function: var(--md-sys-motion-easing-emphasized);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lt-drawer-sheet {
+    transform: translateX(-100%);
+  }
+}
+
+dialog.lt-drawer:is([open]):where(:not([data-closing])) .lt-drawer-sheet {
+  opacity: 1;
+}
+
+@starting-style {
+  dialog.lt-drawer:is([open]):where(:not([data-closing])) .lt-drawer-sheet {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.lt-drawer:is([open]):where(:not([data-closing])) .lt-drawer-sheet {
+    transform: translateX(0);
+  }
+
+  @starting-style {
+    dialog.lt-drawer:is([open]):where(:not([data-closing])) .lt-drawer-sheet {
+      transform: translateX(-100%);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog.lt-drawer,
+  dialog.lt-drawer::backdrop,
+  .lt-drawer-sheet {
+    transition-duration: 0.12s;
+  }
+}
+
+/* Accessible responsive table container */
+.table-wrapper {
+  overflow: auto;
+  max-inline-size: 100%;
+  container-type: inline-size;
+}
+
+.table-wrapper table {
+  border-collapse: separate;
+  border-spacing: 0;
+  inline-size: 100%;
+}
+
+.table-wrapper thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+}
+
+@container (max-width: 600px) {
+  .table-wrapper th,
+  .table-wrapper td {
+    padding-inline: 0.625rem;
+    padding-block: 0.5rem;
+  }
+}
+
+/* FullCalendar MD3 workbench overrides */
+.fc {
+  --fc-border-color: var(--md-sys-color-outline-variant);
+  --fc-today-bg-color: #edf3ff;
+  --fc-button-bg-color: var(--md-sys-color-secondary-container);
+  --fc-button-text-color: var(--md-sys-color-on-secondary-container);
+  --fc-button-border-color: transparent;
+  --fc-button-hover-bg-color: #c7d5f0;
+  --fc-button-hover-border-color: transparent;
+  --fc-button-active-bg-color: var(--md-sys-color-primary);
+  --fc-button-active-border-color: var(--md-sys-color-primary);
+  font-size: 0.875rem;
+}
+
+.fc .fc-scrollgrid {
+  border-radius: var(--md-sys-shape-corner-md);
+  overflow: hidden;
+}
+
+.fc .fc-toolbar {
+  flex-wrap: wrap;
+  gap: 0.625rem;
+}
+
+.fc .fc-toolbar-title {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.fc .fc-button {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.4375rem 0.875rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.fc .fc-button-primary.fc-button-active,
+.fc .fc-button-primary:not(:disabled).fc-button-active {
+  color: var(--md-sys-color-on-primary);
+}
+
+.fc .fc-daygrid-event,
+.fc .fc-timegrid-event {
+  border-radius: var(--md-sys-shape-corner-xs);
+  padding: 2px 7px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.fc-event-tentative {
+  border-style: dashed !important;
+  opacity: 0.92;
+}
+
+.fc-event-completed {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+@media (forced-colors: active) {
+  .lt-card,
+  .lt-surface-tonal,
+  dialog.lt-modal,
+  .lt-drawer-sheet {
+    border: 1px solid CanvasText;
+  }
+}

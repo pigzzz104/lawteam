@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lawteam-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lawteam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lawteam_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-lawteam}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lawteam} -d ${POSTGRES_DB:-lawteam}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lawteam-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lawteam}:${POSTGRES_PASSWORD:-lawteam_dev_password}@postgres:5432/${POSTGRES_DB:-lawteam}
+      CASES_ROOT: /app/data/cases
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/cases:/app/data/cases
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lawteam-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
