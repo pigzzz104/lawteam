@@ -23,8 +23,98 @@ from app.services.llm_client import UniversalLLMClient
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
-_CASE_NO_NORMALIZE_TRANS = str.maketrans({"(": "（", ")": "）", "[": "（", "]": "）", "〔": "（", "〕": "）"})
+_CASE_NO_NORMALIZE_TRANS = str.maketrans(
+    {"(": "（", ")": "）", "[": "（", "]": "）", "〔": "（", "〕": "）", "【": "（", "】": "）"}
+)
 _TRAILING_PUNCT = "，。；！!）,.)）\"'、\r\n"
+
+_COMPANY_LEGAL_SUFFIXES = (
+    "有限责任公司",
+    "股份有限公司",
+    "集团有限公司",
+    "控股有限公司",
+    "合伙企业",
+    "有限合伙",
+    "普通合伙",
+    "有限公司",
+    "股份公司",
+    "集团公司",
+    "工作室",
+    "事务所",
+    "研究院",
+    "中心",
+    "集团",
+    "公司",
+)
+_COMPANY_INDUSTRY_SUFFIXES = (
+    "电子商务",
+    "信息技术",
+    "机电工程",
+    "网络科技",
+    "文化传播",
+    "投资管理",
+    "企业管理",
+    "管理",
+    "投资",
+    "科技",
+    "信息",
+    "网络",
+    "软件",
+    "电子",
+    "机电",
+    "工程",
+    "会展",
+    "咨询",
+    "服务",
+    "实业",
+    "商贸",
+    "贸易",
+    "物流",
+    "建筑",
+    "装饰",
+    "医药",
+    "能源",
+    "汽车",
+    "文化",
+)
+_REGION_PREFIXES = (
+    "北京市",
+    "上海市",
+    "天津市",
+    "重庆市",
+    "深圳市",
+    "广州市",
+    "杭州市",
+    "成都市",
+    "武汉市",
+    "南京市",
+    "苏州市",
+    "中国",
+    "北京",
+    "上海",
+    "天津",
+    "重庆",
+    "深圳",
+    "广州",
+    "杭州",
+    "成都",
+    "武汉",
+    "南京",
+    "苏州",
+    "宁波",
+    "厦门",
+    "青岛",
+    "长沙",
+    "郑州",
+    "西安",
+    "广东",
+    "江苏",
+    "浙江",
+    "四川",
+    "湖北",
+    "山东",
+    "福建",
+)
 
 _CASE_CATEGORY_ORDER = (
     "criminal",
@@ -75,6 +165,67 @@ def normalize_case_number(raw: Optional[str]) -> Optional[str]:
         return None
     cleaned = re.sub(r"\s+", "", raw.strip()).translate(_CASE_NO_NORMALIZE_TRANS)
     return cleaned or None
+
+
+def _case_number_match_keys(raw: Optional[str]) -> set[str]:
+    norm = normalize_case_number(raw)
+    if not norm:
+        return set()
+    keys = {norm}
+    no_di = re.sub(r"第(\d+号?)$", r"\1", norm)
+    keys.add(no_di)
+    m_pref = re.match(r"^([\u4e00-\u9fa5]+)(（\d{4}）)(.+)$", no_di)
+    if m_pref:
+        keys.add(f"{m_pref.group(2)}{m_pref.group(1)}{m_pref.group(3)}")
+    return {k for k in keys if len(k) >= 6}
+
+
+def _strip_company_suffixes(name: str) -> str:
+    val = re.sub(r"[\s()（）]+", "", (name or "").strip())
+    changed = True
+    while changed and val:
+        changed = False
+        for sfx in _COMPANY_LEGAL_SUFFIXES:
+            if val.endswith(sfx) and len(val) > len(sfx) + 1:
+                val = val[: -len(sfx)]
+                changed = True
+                break
+    return val
+
+
+def _client_short_aliases(client_name: str) -> list[str]:
+    """Generate distinct short corporate aliases (>=3 chars) for tolerant matching."""
+    base = _strip_company_suffixes(client_name)
+    if len(base) < 3:
+        return []
+
+    variants: list[str] = [base]
+    cur = base
+    for _ in range(2):
+        trimmed = cur
+        for ind in _COMPANY_INDUSTRY_SUFFIXES:
+            if cur.endswith(ind) and len(cur) - len(ind) >= 3:
+                trimmed = cur[: -len(ind)]
+                break
+        if trimmed != cur:
+            variants.append(trimmed)
+            cur = trimmed
+        else:
+            break
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for item in variants:
+        if len(item) >= 3 and item not in seen:
+            seen.add(item)
+            expanded.append(item)
+        for pref in _REGION_PREFIXES:
+            if item.startswith(pref) and len(item) - len(pref) >= 3:
+                no_reg = item[len(pref) :]
+                if no_reg not in seen:
+                    seen.add(no_reg)
+                    expanded.append(no_reg)
+    return expanded
 
 
 def _extract_url_params(url: str) -> dict[str, str]:
@@ -271,6 +422,25 @@ def parse_sms_regex(
                 }
             )
 
+    # Generic http link fallback for 12309 / arbitration / court notices not matching fixed portals
+    if sms_category in ("court_service", "procuratorate_12309", "arbitration") and not court_links:
+        for m in re.finditer(r"https?://[^\s<>'\"]+", clean_text):
+            url = m.group(0).rstrip(_TRAILING_PUNCT)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            domain = urlparse(url).netloc.lower() or "generic_portal"
+            court_links.append(
+                {
+                    "domain": domain,
+                    "description": "电子送达直链" if sms_category != "arbitration" else "仲裁电子送达链接",
+                    "tier": 1,
+                    "download_strategy": "direct_or_playwright",
+                    "url": url,
+                    "params": _extract_url_params(url),
+                }
+            )
+
     invoice_links: list[dict[str, Any]] = []
     for inv_rule in patterns.get("invoice_link_patterns", []):
         pat = inv_rule.get("pattern")
@@ -450,21 +620,30 @@ def match_case_with_confidence(
     combined = f"{parsed.get('client_hint') or ''} {extra_text}".strip()
     norm_combined = normalize_case_number(combined) or ""
 
-    # 1. Exact case_number match (prefer active cases; fall back to archived if needed)
+    # 1. Exact & prefix/bracket-normalized case_number match (prefer active cases)
     exact_matches: list[Case] = []
     if target_case_no:
+        target_keys = _case_number_match_keys(target_case_no)
         exact_matches = [
             c for c in active_candidates if normalize_case_number(c.case_number) == target_case_no
         ]
         if not exact_matches:
             exact_matches = [
-                c for c in candidates if normalize_case_number(c.case_number) == target_case_no
+                c for c in active_candidates if bool(_case_number_match_keys(c.case_number) & target_keys)
+            ]
+        if not exact_matches:
+            exact_matches = [
+                c
+                for c in candidates
+                if normalize_case_number(c.case_number) == target_case_no
+                or bool(_case_number_match_keys(c.case_number) & target_keys)
             ]
     if not exact_matches and norm_combined:
         exact_matches = [
             c
             for c in pool
-            if c.case_number and normalize_case_number(c.case_number) in norm_combined
+            if c.case_number
+            and any(k in norm_combined for k in _case_number_match_keys(c.case_number))
         ]
 
     if len(exact_matches) == 1:
@@ -477,7 +656,7 @@ def match_case_with_confidence(
             reason="案号命中多个案件，请人工确认归属案件",
         )
 
-    # 2. Client name match among active cases
+    # 2. Client name & corporate short-alias match among active cases
     if combined:
         client_matches = [
             c
@@ -492,6 +671,33 @@ def match_case_with_confidence(
                 confidence="ambiguous",
                 candidate_case_ids=[c.id for c in client_matches if c.id is not None],
                 reason=f"委托人「{client_matches[0].client_name}」名下有 {len(client_matches)} 个在办案件，请人工指定归属",
+            )
+
+        compact_combined = re.sub(r"[\s()（）]+", "", combined)
+        buyer_name = str((parsed.get("invoice_meta") or {}).get("buyer_name") or "").strip()
+        buyer_stripped = _strip_company_suffixes(buyer_name) if buyer_name else ""
+        alias_matches: list[Case] = []
+        for c in active_candidates:
+            if not c.client_name:
+                continue
+            aliases = _client_short_aliases(c.client_name)
+            hit = any(alias in compact_combined for alias in aliases)
+            if not hit and len(buyer_stripped) >= 3:
+                hit = buyer_stripped in _strip_company_suffixes(c.client_name)
+            if hit:
+                alias_matches.append(c)
+        if len(alias_matches) == 1:
+            return CaseMatchResult(
+                case=alias_matches[0],
+                confidence="unique_client_alias",
+                reason="按委托人企业简称唯一匹配",
+            )
+        if len(alias_matches) > 1:
+            return CaseMatchResult(
+                case=None,
+                confidence="ambiguous",
+                candidate_case_ids=[c.id for c in alias_matches if c.id is not None],
+                reason=f"简称命中 {len(alias_matches)} 个在办案件，请人工确认归属",
             )
 
         opponent_matches = [

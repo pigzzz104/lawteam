@@ -17,6 +17,7 @@ import httpx
 import pdfplumber
 
 from app.services import file_bridge
+from app.services.ocr_service import extract_scanned_pdf_text
 
 logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -159,6 +160,24 @@ def parse_invoice_pdf_bytes(data: bytes, fallback_name: str = "invoice.pdf") -> 
     except Exception as exc:  # noqa: BLE001
         logger.debug("pdfplumber invoice parse error (%s): %s", fallback_name, exc)
     return _extract_invoice_fields_from_text(text, file_format="pdf")
+
+
+async def parse_invoice_bytes_with_ocr(
+    data: bytes,
+    *,
+    ext: str = ".pdf",
+    fallback_name: str = "invoice.pdf",
+) -> dict[str, Any]:
+    """Parse PDF/OFD/XML invoice metadata with OCR fallback on scanned PDFs."""
+    meta = parse_invoice_bytes(data, ext=ext, fallback_name=fallback_name)
+    norm_ext = f".{ext.lstrip('.').lower()}" if ext else ".pdf"
+    if norm_ext == ".pdf" and not meta.get("raw_extracted"):
+        ocr_res = await extract_scanned_pdf_text(data, max_pages=2)
+        if ocr_res.has_meaningful_text:
+            meta = _extract_invoice_fields_from_text(ocr_res.text, file_format="pdf")
+            meta["ocr_used"] = True
+            meta["ocr_source"] = ocr_res.source
+    return meta
 
 
 def _decode_xml_bytes(data: bytes) -> str:
@@ -742,7 +761,7 @@ async def fetch_and_stage_invoice(parsed_sms: dict[str, Any]) -> InvoiceFetchRes
             manual_reason=base_reason,
         )
 
-    meta = parse_invoice_bytes(picked_bytes, ext=picked_ext)
+    meta = await parse_invoice_bytes_with_ocr(picked_bytes, ext=picked_ext)
     if extra_meta:
         meta = _merge_invoice_meta(meta, extra_meta)
     filename = format_invoice_filename(meta, ext=picked_ext)

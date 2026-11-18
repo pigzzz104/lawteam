@@ -126,11 +126,14 @@ def evaluate_and_apply_auto_triage(
     if triage.item_type == "invoice_archive":
         if not triage.downloaded_files:
             payload["triage_decision"] = "needs_confirm"
-            payload["triage_reason"] = "未获取到电子发票 PDF，请手动上传或补充信息"
+            payload["triage_reason"] = "未获取到电子发票文件，请手动上传或补充信息"
             triage.extracted_payload = payload
             return triage
 
-        if match_res.confidence in ("exact_case_number", "unique_client") and match_res.case is not None:
+        if (
+            match_res.confidence in ("exact_case_number", "unique_client", "unique_client_alias")
+            and match_res.case is not None
+        ):
             triage.extracted_payload = payload
             apply_triage_to_case(
                 session,
@@ -224,7 +227,10 @@ def evaluate_and_apply_auto_triage(
             if (
                 ev_type == "evidence_notice_served"
                 and not payload.get("authority_specified_days")
-                and any(isinstance(d, dict) and d.get("has_text") is False for d in parsed_docs)
+                and any(
+                    isinstance(d, dict) and (d.get("has_text") is False or d.get("is_scanned"))
+                    for d in parsed_docs
+                )
             ):
                 payload["triage_decision"] = "needs_confirm"
                 payload["triage_reason"] = "举证通知书为扫描件，未能自动提取法院指定举证天数，请人工核对"

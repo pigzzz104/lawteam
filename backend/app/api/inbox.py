@@ -36,8 +36,8 @@ from app.models.entities import (
     utcnow,
 )
 from app.services import file_bridge
-from app.services.court_fetcher import parse_court_pdf_bytes
-from app.services.invoice_fetcher import format_invoice_filename, parse_invoice_bytes
+from app.services.court_fetcher import parse_court_pdf_bytes_with_ocr
+from app.services.invoice_fetcher import format_invoice_filename, parse_invoice_bytes_with_ocr
 from app.services.sms_normalizer import compute_sms_hashes, NormalizedSmsPayload
 from app.services.sms_parser import CaseMatchResult, match_case_with_confidence
 from app.services.triage_archiver import (
@@ -342,7 +342,7 @@ async def manual_upload_triage_files(
 
         if item_type == "invoice_archive":
             inv_ext = suffix if suffix in (".pdf", ".ofd", ".xml") else ".pdf"
-            meta = parse_invoice_bytes(raw_bytes, ext=inv_ext, fallback_name=orig_name)
+            meta = await parse_invoice_bytes_with_ocr(raw_bytes, ext=inv_ext, fallback_name=orig_name)
             fmt_name = format_invoice_filename(meta, fallback_name=orig_name, ext=inv_ext)
             _, rel_path = file_bridge.save_unclaimed_invoice(fmt_name, raw_bytes)
             staged_rels.append(rel_path)
@@ -362,7 +362,7 @@ async def manual_upload_triage_files(
             _, rel_path = file_bridge.save_staged_triage_file(batch_key, orig_name, raw_bytes)
             staged_rels.append(rel_path)
             if suffix == ".pdf":
-                parsed_docs.append(parse_court_pdf_bytes(raw_bytes, orig_name))
+                parsed_docs.append(await parse_court_pdf_bytes_with_ocr(raw_bytes, orig_name))
 
     payload: dict[str, Any] = {
         "manual_upload": True,

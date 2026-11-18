@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -26,6 +26,7 @@ import pdfplumber
 
 from app.config import get_settings
 from app.services import file_bridge
+from app.services.ocr_service import MIN_TEXT_CHARS, extract_scanned_pdf_text
 from app.services.sms_parser import normalize_case_number
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,32 @@ SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 ZXFW_API_URL = "https://zxfw.court.gov.cn/yzw/yzw-zxfw-sdfw/api/v1/sdfw/getWsListBySdbhNew"
 HBFY_API_URL = "http://dzsd.hbfy.gov.cn/delimobile/tDeliSms/findSmsInfo"
 
-_CASE_NO_RE = re.compile(r"[（(〔\[]\s*\d{4}\s*[）)\]〕]\s*[\u4e00-\u9fa5]{1,12}\d*[\u4e00-\u9fa5]{1,8}\d+号?")
+_CASE_NO_RE = re.compile(
+    r"(?:(?:(?![的在查收收到代理案号文您你请])[\u4e00-\u9fa5]){1,6}(?:劳人仲|仲[案裁]?字?|案字))?[（(〔\[]\s*\d{4}\s*[）)\]〕]\s*[\u4e00-\u9fa5A-Za-z0-9]{1,14}第?\d+号?"
+)
 _HEARING_TIME_RE = re.compile(
     r"(?:定于|开庭时间|传唤时间|听证时间)[：:\s]*(\d{4}年\d{1,2}月\d{1,2}日\s*(?:上午|下午)?\s*\d{1,2}[时点:]\d{0,2}分?)"
 )
 _HEARING_LOC_RE = re.compile(
     r"(?:(?:开庭|听证|庭审)?地点[：:\s]*|在(?:本院)?\s*)([\u4e00-\u9fa5A-Za-z0-9第\-]{2,35}(?:法庭|审判庭|调解室|仲裁庭))"
 )
-_SPECIFIED_DAYS_RE = re.compile(r"举证期限为(?:自收到[\u4e00-\u9fa5]{0,12}之?日?起)?(\d{1,3})日")
+_SPECIFIED_DAYS_RE = re.compile(
+    r"举证期限(?:为|不少于)?(?:自收到[\u4e00-\u9fa5]{0,18}?之?\s*日?\s*起)?\s*(\d{1,3})\s*[日天]"
+)
+_SPECIFIED_CN_DAYS_RE = re.compile(
+    r"举证期限(?:为|不少于)?(?:自收到[\u4e00-\u9fa5]{0,18}?之?\s*日?\s*起)?\s*([一二三四五六七八九十廿卅]{1,3})\s*[日天]"
+)
+_CN_NUM_VALUES = {
+    "五": 5,
+    "七": 7,
+    "十": 10,
+    "十二": 12,
+    "十五": 15,
+    "二十": 20,
+    "三十": 30,
+    "四十五": 45,
+    "六十": 60,
+}
 _JUDGE_RE = re.compile(r"(?:审\s*判\s*员|审\s*判\s*长|承办法官)[：:\s]*([\u4e00-\u9fa5]{2,5})")
 _CLERK_RE = re.compile(r"书\s*记\s*员[：:\s]*([\u4e00-\u9fa5]{2,5})")
 
@@ -73,16 +92,25 @@ class CourtFetchResult:
     requires_phone_last4: bool = False
 
 
-def parse_court_pdf_bytes(data: bytes, filename: str) -> dict[str, Any]:
-    """Extract procedural metadata from the first 3 pages of a court PDF document."""
-    text = ""
-    try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            pages_text = [page.extract_text() or "" for page in pdf.pages[:3]]
-            text = "\n".join(pages_text).strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("pdfplumber failed for %s: %s", filename, exc)
+def _extract_specified_days(text: str) -> Optional[int]:
+    m_days = _SPECIFIED_DAYS_RE.search(text)
+    if m_days:
+        return int(m_days.group(1))
+    m_cn = _SPECIFIED_CN_DAYS_RE.search(text)
+    if m_cn and m_cn.group(1) in _CN_NUM_VALUES:
+        return _CN_NUM_VALUES[m_cn.group(1)]
+    return None
 
+
+def _extract_court_fields_from_text(
+    text: str,
+    filename: str,
+    *,
+    has_text: bool,
+    is_scanned: bool = False,
+    ocr_used: bool = False,
+    ocr_source: Optional[str] = None,
+) -> dict[str, Any]:
     doc_info: dict[str, Any] = {
         "filename": filename,
         "document_type": filename.rsplit(".", 1)[0],
@@ -93,7 +121,10 @@ def parse_court_pdf_bytes(data: bytes, filename: str) -> dict[str, Any]:
         "authority_specified_days": None,
         "judge_name": None,
         "clerk_name": None,
-        "has_text": len(text) > 30,
+        "has_text": has_text,
+        "is_scanned": is_scanned,
+        "ocr_used": ocr_used,
+        "ocr_source": ocr_source,
     }
     combined = f"{filename}\n{text}"
 
@@ -145,9 +176,7 @@ def parse_court_pdf_bytes(data: bytes, filename: str) -> dict[str, Any]:
         if m_loc:
             doc_info["hearing_location"] = m_loc.group(1).strip()
 
-        m_days = _SPECIFIED_DAYS_RE.search(text)
-        if m_days:
-            doc_info["authority_specified_days"] = int(m_days.group(1))
+        doc_info["authority_specified_days"] = _extract_specified_days(text)
 
         m_judge = _JUDGE_RE.search(text)
         if m_judge:
@@ -158,6 +187,49 @@ def parse_court_pdf_bytes(data: bytes, filename: str) -> dict[str, Any]:
             doc_info["clerk_name"] = m_clerk.group(1).strip()
 
     return doc_info
+
+
+def _extract_pdf_text_sync(data: bytes, filename: str) -> str:
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            pages_text = [page.extract_text() or "" for page in pdf.pages[:3]]
+            return "\n".join(pages_text).strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pdfplumber failed for %s: %s", filename, exc)
+        return ""
+
+
+def parse_court_pdf_bytes(data: bytes, filename: str) -> dict[str, Any]:
+    """Extract procedural metadata from the first 3 pages of a court PDF document."""
+    text = _extract_pdf_text_sync(data, filename)
+    compact_len = len(re.sub(r"\s+", "", text))
+    has_text = compact_len >= MIN_TEXT_CHARS
+    return _extract_court_fields_from_text(
+        text,
+        filename,
+        has_text=has_text,
+        is_scanned=not has_text,
+    )
+
+
+async def parse_court_pdf_bytes_with_ocr(data: bytes, filename: str) -> dict[str, Any]:
+    """Extract metadata from PDF text layer, falling back to VLM/local OCR on scanned PDFs."""
+    info = parse_court_pdf_bytes(data, filename)
+    if info.get("has_text"):
+        return info
+
+    ocr_res = await extract_scanned_pdf_text(data, max_pages=2)
+    if not ocr_res.has_meaningful_text:
+        return info
+
+    return _extract_court_fields_from_text(
+        ocr_res.text,
+        filename,
+        has_text=True,
+        is_scanned=True,
+        ocr_used=True,
+        ocr_source=ocr_res.source,
+    )
 
 
 def _detect_manual_hint(message: str) -> tuple[Optional[str], bool]:
@@ -198,7 +270,7 @@ def _unpack_zip_docs(zip_bytes: bytes) -> list[tuple[str, bytes]]:
     return docs
 
 
-def _stage_captured_docs(
+async def _stage_captured_docs(
     captured_docs: list[tuple[str, bytes]],
     *,
     batch_key: str,
@@ -220,7 +292,7 @@ def _stage_captured_docs(
         _, rel_path = file_bridge.save_staged_triage_file(batch_key, filename, file_bytes)
         staged_paths.append(rel_path)
         if ext == ".pdf":
-            parsed_docs.append(parse_court_pdf_bytes(file_bytes, filename))
+            parsed_docs.append(await parse_court_pdf_bytes_with_ocr(file_bytes, filename))
     return staged_paths, parsed_docs
 
 
@@ -318,7 +390,7 @@ async def _tier1_fetch_zxfw(
         _, rel_path = file_bridge.save_staged_triage_file(batch_key, filename, content_bytes)
         staged_paths.append(rel_path)
         if fmt.lower() == "pdf":
-            parsed_docs.append(parse_court_pdf_bytes(content_bytes, filename))
+            parsed_docs.append(await parse_court_pdf_bytes_with_ocr(content_bytes, filename))
 
     if not staged_paths:
         return None, "未能从送达平台下载有效文书文件", False
@@ -414,7 +486,7 @@ async def _tier1_fetch_hbfy(
     if not captured:
         return None, "未能从湖北电子送达平台下载有效文书文件", False
 
-    staged_paths, parsed_docs = _stage_captured_docs(
+    staged_paths, parsed_docs = await _stage_captured_docs(
         captured,
         batch_key=batch_key,
         case_number=case_number,
@@ -769,7 +841,7 @@ async def _tier2_playwright_fetch(
             not bool(phone_last4),
         )
 
-    staged_paths, parsed_docs = _stage_captured_docs(
+    staged_paths, parsed_docs = await _stage_captured_docs(
         captured_docs,
         batch_key=batch_key,
         case_number=case_number,
@@ -790,6 +862,126 @@ async def _tier2_playwright_fetch(
             parsed_docs=parsed_docs,
         ),
         "",
+        False,
+    )
+
+
+async def _fetch_url_response(url: str) -> tuple[bytes, str, str, str]:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return (
+            resp.content,
+            str(resp.url),
+            (resp.headers.get("content-type") or "").lower(),
+            resp.headers.get("content-disposition") or "",
+        )
+
+
+def _extract_embedded_doc_url(html_text: str, base_url: str) -> Optional[str]:
+    for pat in (
+        r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+url=([^"'\s>]+)""",
+        r"""<(?:iframe|embed|source)[^>]+src=["']([^"']+\.(?:pdf|ofd)(?:\?[^"']*)?)["']""",
+        r"""<a[^>]+href=["']([^"']+\.(?:pdf|ofd|docx|zip)(?:\?[^"']*)?)["']""",
+    ):
+        m = re.search(pat, html_text, re.IGNORECASE)
+        if m:
+            candidate = urljoin(base_url, m.group(1).strip())
+            if candidate.startswith(("http://", "https://")):
+                return candidate
+    return None
+
+
+def _classify_direct_doc_payload(
+    content: bytes,
+    *,
+    final_url: str,
+    content_type: str,
+    content_disposition: str,
+    fallback_title: str,
+) -> list[tuple[str, bytes]]:
+    if len(content) < 64:
+        return []
+    if content.startswith(b"%PDF-") or "application/pdf" in content_type or final_url.lower().endswith(".pdf"):
+        return [(f"{fallback_title}.pdf", content)]
+    if content.startswith(b"PK\x03\x04"):
+        unpacked = _unpack_zip_docs(content)
+        if unpacked:
+            return unpacked
+        return [(f"{fallback_title}.ofd", content)]
+    m_fn = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\r\n]+)', content_disposition, re.IGNORECASE)
+    if m_fn:
+        leaf = Path(m_fn.group(1).strip()).name
+        if Path(leaf).suffix.lower() in _ALLOWED_DOC_EXTS:
+            return [(leaf, content)]
+    return []
+
+
+async def _tier1_fetch_direct_or_portal(
+    link_info: dict[str, Any],
+    *,
+    batch_key: str,
+    case_number: Optional[str],
+    received_date: str,
+) -> tuple[Optional[CourtFetchResult], Optional[str], bool]:
+    """Attempt direct HTTP / HTML-redirect PDF fetch for 12309 and arbitration links."""
+    url = str(link_info.get("url") or "").strip()
+    if not url:
+        return None, None, False
+    fallback_title = str(link_info.get("description") or "送达文书").strip()
+
+    try:
+        raw, final_url, ct, cd = await _fetch_url_response(url)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Direct/portal fetch failed for %s: %s", url, exc)
+        return None, None, False
+
+    captured = _classify_direct_doc_payload(
+        raw,
+        final_url=final_url,
+        content_type=ct,
+        content_disposition=cd,
+        fallback_title=fallback_title,
+    )
+    if not captured and ("html" in ct or b"<html" in raw[:512].lower()):
+        html_text = raw.decode("utf-8", errors="ignore")
+        hint, needs_phone = _detect_manual_hint(html_text)
+        if hint and any(k in html_text for k in ("验证码", "人脸", "小程序", "滑块")):
+            return None, hint, needs_phone
+        nested_url = _extract_embedded_doc_url(html_text, final_url)
+        if nested_url:
+            try:
+                raw2, final_url2, ct2, cd2 = await _fetch_url_response(nested_url)
+                captured = _classify_direct_doc_payload(
+                    raw2,
+                    final_url=final_url2,
+                    content_type=ct2,
+                    content_disposition=cd2,
+                    fallback_title=fallback_title,
+                )
+            except Exception:  # noqa: BLE001
+                captured = []
+
+    if not captured:
+        return None, None, False
+
+    staged_paths, parsed_docs = await _stage_captured_docs(
+        captured,
+        batch_key=batch_key,
+        case_number=case_number,
+        received_date=received_date,
+    )
+    if not staged_paths:
+        return None, None, False
+
+    return (
+        CourtFetchResult(
+            status="fetched",
+            tier_used="tier1_api",
+            downloaded_files=staged_paths,
+            parsed_docs=parsed_docs,
+        ),
+        None,
         False,
     )
 
@@ -836,6 +1028,16 @@ async def fetch_court_documents(
             )
         elif "dzsd.hbfy.gov.cn" in domain:
             res, t1_err, needs_phone = await _tier1_fetch_hbfy(
+                link,
+                batch_key=batch_key,
+                case_number=case_number,
+                received_date=received_date,
+            )
+        elif link.get("download_strategy") == "direct_or_playwright" or domain in (
+            "12309.gov.cn",
+            "arbitration_portal",
+        ):
+            res, t1_err, needs_phone = await _tier1_fetch_direct_or_portal(
                 link,
                 batch_key=batch_key,
                 case_number=case_number,

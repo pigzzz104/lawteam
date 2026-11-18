@@ -117,14 +117,16 @@ def _cleanup_records(
             t = session.get(InboxTriageItem, tid)
             if t is not None:
                 session.delete(t)
+        for cid in case_ids:
+            for model in (AuditLog, Deadline, ScheduleItem, Document, CaseEvent, CaseMember):
+                for row in session.exec(select(model).where(model.case_id == cid)).all():
+                    session.delete(row)
+        session.flush()
         for sid in sms_ids:
             s = session.get(SmsInbound, sid)
             if s is not None:
                 session.delete(s)
         for cid in case_ids:
-            for model in (AuditLog, Deadline, ScheduleItem, Document, CaseEvent, CaseMember):
-                for row in session.exec(select(model).where(model.case_id == cid)).all():
-                    session.delete(row)
             c = session.get(Case, cid)
             if c is not None:
                 session.delete(c)

@@ -61,6 +61,24 @@
       "pattern": "https?://[^\\s/]+/sfsdw//?r/[a-zA-Z0-9]+",
       "required_params": [],
       "download_strategy": "playwright"
+    },
+    {
+      "domain": "12309.gov.cn",
+      "canonical_domain": "12309.gov.cn",
+      "tier": 1,
+      "description": "12309 中国检察网电子送达/文书直链",
+      "pattern": "https?://(?:[^\\s/]+\\.)?12309\\.gov\\.cn[^\\s]*",
+      "required_params": [],
+      "download_strategy": "direct_or_playwright"
+    },
+    {
+      "domain": "arbitration_portal",
+      "canonical_domain": "arbitration_portal",
+      "tier": 1,
+      "description": "商事/劳动人事争议仲裁电子送达平台",
+      "pattern": "https?://[^\\s/]*(?:cietac\\.org|shiac\\.org|scia\\.com\\.cn|bjac\\.org\\.cn|gzac\\.org|hrss\\.[^\\s/]+\\.gov\\.cn)[^\\s]*",
+      "required_params": [],
+      "download_strategy": "direct_or_playwright"
     }
   ],
   "invoice_link_patterns": [
@@ -80,7 +98,7 @@
       "pattern": "https?://[^\\s]*(?:etax\\.[^\\s]+\\.gov\\.cn|dppt\\.[^\\s]+\\.gov\\.cn|fapiao\\.chinatax\\.gov\\.cn)[^\\s]*"
     }
   ],
-  "case_number_pattern": "[（(〔\\[]\\d{4}[）)\\]〕]\\s*[\\u4e00-\\u9fa5]{1,12}\\d*[\\u4e00-\\u9fa5]{1,8}\\d+号",
+  "case_number_pattern": "(?:(?:(?![的在查收收到代理案号文您你请])[\\u4e00-\\u9fa5]){1,6}(?:劳人仲|仲[案裁]?字?|案字))?[（(〔\\[]\\s*\\d{4}\\s*[）)\\]〕]\\s*[\\u4e00-\\u9fa5A-Za-z0-9]{1,14}第?\\d+号",
   "extraction_code_patterns": [
     "(?:提取码|验证码|查收码|取件码|密码)[：:\\s]*([0-9A-Za-z]{4,8})"
   ],
