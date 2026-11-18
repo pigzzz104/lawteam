@@ -107,6 +107,21 @@
       "is_enabled": true
     },
     {
+      "rule_code": "CIVIL_APPEAL_FOREIGN_RULING_30D",
+      "name": "涉外民事裁定上诉期（30日）",
+      "case_category": "civil",
+      "trigger_event_type": "ruling_served",
+      "condition_match": {"is_foreign_related": true},
+      "duration_value": 30,
+      "duration_unit": "days",
+      "holiday_roll_mode": "roll_workday",
+      "legal_basis": "《民事诉讼法（2023修正）》第286条：涉外无住所当事人对裁定的上诉期为三十日",
+      "risk_level": "critical",
+      "default_offsets_days": [10, 5, 1, 0],
+      "is_system_builtin": true,
+      "is_enabled": true
+    },
+    {
       "rule_code": "CIVIL_RETRIAL_6M",
       "name": "民事申请再审期限（6个月）",
       "case_category": "civil",

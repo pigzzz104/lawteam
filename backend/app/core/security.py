@@ -17,6 +17,7 @@ from app.models.entities import (
     CaseMember,
     CaseMemberRole,
     CaseVisibility,
+    InboxTriageItem,
     SystemRole,
     User,
 )
@@ -79,6 +80,7 @@ def create_triage_action_token(
     triage_id: int,
     action: str,
     case_id: Optional[int] = None,
+    action_epoch: int = 0,
     expires_hours: int = 72,
 ) -> str:
     """Create a signed JWT token for one-tap WeChat/WeCom triage confirmation or ignore."""
@@ -89,6 +91,7 @@ def create_triage_action_token(
         "sub": str(user_id),
         "triage_id": triage_id,
         "action": action,
+        "action_epoch": action_epoch,
         "iat": now,
         "exp": now + timedelta(hours=expires_hours),
     }
@@ -218,6 +221,79 @@ def check_case_access(
         )
 
     return case
+
+
+def check_triage_access(
+    session: Session,
+    user: User,
+    item: Optional[InboxTriageItem],
+) -> InboxTriageItem:
+    """Enforce RBAC and strict PRIVATE case isolation on an InboxTriageItem."""
+    if item is None or item.id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Triage item not found")
+
+    if item.matched_case_id is not None:
+        matched_case = session.get(Case, item.matched_case_id)
+        if matched_case is not None and matched_case.visibility == CaseVisibility.PRIVATE:
+            if matched_case.owner_id != user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied for private case triage item",
+                )
+
+    if user.system_role == SystemRole.ADMIN or item.owner_user_id == user.id:
+        return item
+    if item.matched_case_id is not None:
+        accessible_ids = get_accessible_case_ids_filter(user, session)
+        if item.matched_case_id in accessible_ids:
+            return item
+    if (
+        item.item_type == "invoice_archive"
+        and item.matched_case_id is None
+        and user.system_role == SystemRole.ASSISTANT
+    ):
+        return item
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied to this triage item",
+    )
+
+
+def filter_visible_triage_items(
+    session: Session,
+    user: User,
+    items: list[InboxTriageItem],
+) -> list[InboxTriageItem]:
+    """Filter triage items respecting strict PRIVATE isolation even for ADMIN."""
+    if not items:
+        return []
+    case_ids = {it.matched_case_id for it in items if it.matched_case_id is not None}
+    private_other_case_ids: set[int] = set()
+    if case_ids:
+        cases = session.exec(select(Case).where(Case.id.in_(case_ids))).all()  # type: ignore[union-attr]
+        for c in cases:
+            if c.id is not None and c.visibility == CaseVisibility.PRIVATE and c.owner_id != user.id:
+                private_other_case_ids.add(c.id)
+
+    if user.system_role == SystemRole.ADMIN:
+        return [it for it in items if it.matched_case_id not in private_other_case_ids]
+
+    accessible_ids = get_accessible_case_ids_filter(user, session)
+    visible: list[InboxTriageItem] = []
+    for it in items:
+        if it.matched_case_id in private_other_case_ids:
+            continue
+        if it.owner_user_id == user.id:
+            visible.append(it)
+        elif it.matched_case_id is not None and it.matched_case_id in accessible_ids:
+            visible.append(it)
+        elif (
+            it.item_type == "invoice_archive"
+            and it.matched_case_id is None
+            and user.system_role == SystemRole.ASSISTANT
+        ):
+            visible.append(it)
+    return visible
 
 
 def record_audit_log(

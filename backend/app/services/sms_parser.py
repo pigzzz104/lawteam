@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
@@ -271,17 +271,27 @@ def _extract_hearing_time_iso(content: str, patterns: dict[str, Any]) -> Optiona
 
 
 def _extract_event_date_iso(content: str, fallback_dt: Optional[datetime] = None) -> str:
-    # Check explicit header/notice date such as 2026年06月12日 or 2026-06-12
-    m = re.search(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?", content)
-    if m:
-        try:
-            d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-            return d.isoformat()
-        except ValueError:
-            pass
-    base_dt = fallback_dt or datetime.now(SHANGHAI_TZ)
+    # 1. Explicit service/detention/header receipt date (never match future hearing dates or issuance dates)
+    explicit_patterns = (
+        # Leading receipt timestamp header e.g. "张晨律师 2026年06月12日 17:03 【上海市..."
+        r"^\s*[^\n【\[]{0,24}?(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?=\s+\d{1,2}:\d{2}|\s*[【\[])",
+        # Explicit labeled service/receipt/detention date
+        r"(?:送达日期|签收日期|收到日期|刑拘日期|拘留日期|执行日期)[：:\s]*(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?",
+        # Explicit past action e.g. "已于2026-11-10被刑事拘留 / 送达 / 签收 / 冻结 / 查封"
+        r"(?:已于|于)\s*(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?\s*(?:被?(?:刑事拘留|刑拘|拘留|逮捕|取保|送达|签收|收到|冻结|查封|移送))",
+    )
+    for pat in explicit_patterns:
+        m = re.search(pat, content)
+        if m:
+            try:
+                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                return d.isoformat()
+            except ValueError:
+                continue
+
+    base_dt = fallback_dt or datetime.now(timezone.utc)
     if base_dt.tzinfo is None:
-        base_dt = base_dt.replace(tzinfo=SHANGHAI_TZ)
+        base_dt = base_dt.replace(tzinfo=timezone.utc)
     return base_dt.astimezone(SHANGHAI_TZ).date().isoformat()
 
 
@@ -602,13 +612,62 @@ class CaseMatchResult:
     reason: Optional[str] = None
 
 
+_SUGGESTED_STAGE_BY_SUBTYPE_EVENT: dict[tuple[str, str, str], str] = {
+    ("civil", "二审", "pleading_served"): "举证质证",
+    ("civil", "二审", "evidence_notice_served"): "举证质证",
+    ("civil", "二审", "hearing_scheduled"): "开庭审理",
+    ("civil", "二审", "judgment_served"): "裁判生效",
+    ("civil", "二审", "ruling_served"): "裁判生效",
+    ("civil", "再审", "hearing_scheduled"): "审查听证",
+    ("civil", "再审", "judgment_served"): "待裁判",
+    ("civil", "再审", "ruling_served"): "待裁判",
+    ("criminal", "刑事一审", "pleading_served"): "收到起诉书",
+    ("criminal", "刑事一审", "hearing_scheduled"): "开庭审理",
+    ("criminal", "刑事一审", "judgment_served"): "宣判与10日上诉期",
+    ("criminal", "刑事一审", "ruling_served"): "宣判与10日上诉期",
+    ("criminal", "刑事二审", "hearing_scheduled"): "二审开庭",
+    ("criminal", "刑事二审", "judgment_served"): "终审生效归档",
+    ("criminal", "刑事二审", "ruling_served"): "终审生效归档",
+    ("administrative", "行政复议", "reconsideration_decision_served"): "复议决定(15日起诉期)",
+    ("administrative", "行政二审", "hearing_scheduled"): "开庭审理",
+    ("administrative", "行政二审", "judgment_served"): "终审归档",
+}
+
+
 def suggest_stage_for_event(
-    case_category: Optional[str], event_type: Optional[str]
+    case_category: Optional[str],
+    event_type: Optional[str],
+    *,
+    procedure_subtype: Optional[str] = None,
+    current_stage: Optional[str] = None,
 ) -> Optional[str]:
-    """Return suggested procedural stage for `(case_category, event_type)` if mapped."""
+    """Return suggested procedural stage for `(case_category, procedure_subtype, event_type)` without regressing."""
     if not case_category or not event_type:
         return None
-    return _SUGGESTED_STAGE_BY_EVENT.get((case_category, event_type))
+    templates = _stage_templates().get("categories", {})
+    cat_cfg = templates.get(case_category, {})
+    subtypes_map = cat_cfg.get("subtypes", {}) if isinstance(cat_cfg, dict) else {}
+    stages: list[str] = list(
+        (subtypes_map.get(procedure_subtype) if procedure_subtype else None)
+        or cat_cfg.get("stages", [])
+    )
+
+    candidate: Optional[str] = None
+    if procedure_subtype:
+        candidate = _SUGGESTED_STAGE_BY_SUBTYPE_EVENT.get(
+            (case_category, procedure_subtype, event_type)
+        )
+    if candidate is None:
+        fallback = _SUGGESTED_STAGE_BY_EVENT.get((case_category, event_type))
+        if fallback and (not stages or fallback in stages):
+            candidate = fallback
+
+    if not candidate:
+        return None
+    if stages and current_stage in stages and candidate in stages:
+        if stages.index(candidate) <= stages.index(current_stage):
+            return None
+    return candidate
 
 
 def match_case_with_confidence(

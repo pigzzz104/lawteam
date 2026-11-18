@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "lawteam-local-dev-jwt-secret-please-rotate-in-prod"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080
+    allow_internal_webhook_hosts: str = ""
 
     # File Bridge
     cases_root: str = str(ROOT_DIR / "data" / "cases")
@@ -66,6 +67,25 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def internal_webhook_host_allowlist(self) -> set[str]:
+        return {
+            host.strip().lower()
+            for host in self.allow_internal_webhook_hosts.split(",")
+            if host.strip()
+        }
+
+    def is_default_jwt_secret(self) -> bool:
+        val = (self.jwt_secret_key or "").strip()
+        return (
+            len(val) < 16
+            or val
+            in {
+                "lawteam-local-dev-jwt-secret-please-rotate-in-prod",
+                "change-this-to-a-long-random-secret-in-production",
+            }
+        )
 
     @property
     def cases_root_path(self) -> Path:

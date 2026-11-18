@@ -14,7 +14,8 @@ from sqlmodel import Session, select
 
 from app.core.security import (
     check_case_access,
-    get_accessible_case_ids_filter,
+    check_triage_access,
+    filter_visible_triage_items,
     get_current_user,
     record_audit_log,
 )
@@ -30,7 +31,6 @@ from app.models.entities import (
     InboxTriageItem,
     RiskLevel,
     SmsInbound,
-    SystemRole,
     TriageStatus,
     User,
     utcnow,
@@ -215,18 +215,7 @@ def _serialize_triage_items(
 def _get_accessible_triage_or_404(
     session: Session, user: User, triage_id: int
 ) -> InboxTriageItem:
-    item = session.get(InboxTriageItem, triage_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Triage item not found")
-    if user.system_role == SystemRole.ADMIN or item.owner_user_id == user.id:
-        return item
-    if item.matched_case_id is not None:
-        accessible_ids = get_accessible_case_ids_filter(user, session)
-        if item.matched_case_id in accessible_ids:
-            return item
-    if item.item_type == "invoice_archive" and item.matched_case_id is None and user.system_role == SystemRole.ASSISTANT:
-        return item
-    raise HTTPException(status_code=403, detail="Access denied to this triage item")
+    return check_triage_access(session, user, session.get(InboxTriageItem, triage_id))
 
 
 # --- Endpoints ---
@@ -254,22 +243,7 @@ def list_inbox_items(
             if bool((it.extracted_payload or {}).get("auto_archived")) is auto_archived
         ]
 
-    if current_user.system_role == SystemRole.ADMIN:
-        return _serialize_triage_items(session, all_items)
-
-    accessible_ids = get_accessible_case_ids_filter(current_user, session)
-    visible: list[InboxTriageItem] = []
-    for it in all_items:
-        if it.owner_user_id == current_user.id:
-            visible.append(it)
-        elif it.matched_case_id is not None and it.matched_case_id in accessible_ids:
-            visible.append(it)
-        elif (
-            it.item_type == "invoice_archive"
-            and it.matched_case_id is None
-            and current_user.system_role == SystemRole.ASSISTANT
-        ):
-            visible.append(it)
+    visible = filter_visible_triage_items(session, current_user, all_items)
     return _serialize_triage_items(session, visible)
 
 
@@ -501,6 +475,14 @@ def confirm_triage_item(
             target_case = check_case_access(session.get(Case, payload.case_id), current_user, session)
         elif payload.create_case is not None:
             cc = payload.create_case
+            if (
+                cc.visibility == CaseVisibility.PRIVATE
+                and item.owner_user_id != current_user.id
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot move another user's triage item into a private case",
+                )
             subtype, stage = resolve_default_subtype_and_stage(
                 cc.case_category, cc.procedure_subtype, cc.current_stage
             )
@@ -621,6 +603,13 @@ def reopen_triage_endpoint(
     item = _get_accessible_triage_or_404(session, current_user, triage_id)
     if item.status != TriageStatus.CONFIRMED:
         raise HTTPException(status_code=409, detail="Only confirmed or auto-archived items can be reopened")
+    if item.matched_case_id is not None:
+        check_case_access(
+            session.get(Case, item.matched_case_id),
+            current_user,
+            session,
+            require_manage=True,
+        )
     reopen_triage_item(session, item=item, actor_user=current_user)
     session.commit()
     session.refresh(item)

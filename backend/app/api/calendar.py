@@ -688,6 +688,16 @@ def create_custom_deadline(
         due = payload.due_date
         roll_reason = "律师手动创建自定义期限"
 
+    sanitized_alerts: list[dict[str, Any]] = []
+    for a in payload.personal_custom_alerts:
+        dumped = a.model_dump()
+        if dumped.get("user_id") != current_user.id and current_user.system_role != SystemRole.ADMIN:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot attach personal alerts for other users",
+            )
+        sanitized_alerts.append(dumped)
+
     dl = Deadline(
         case_id=case.id,
         source_event_id=None,
@@ -709,7 +719,7 @@ def create_custom_deadline(
         custom_notify_user_ids=payload.custom_notify_user_ids,
         escalate_to_supervisor=payload.escalate_to_supervisor,
         reminder_offsets_days=payload.reminder_offsets_days,
-        personal_custom_alerts=[a.model_dump() for a in payload.personal_custom_alerts],
+        personal_custom_alerts=sanitized_alerts,
     )
     session.add(dl)
     session.flush()
@@ -764,7 +774,17 @@ def update_deadline(
     if "reminder_offsets_days" in updates and updates["reminder_offsets_days"] is not None:
         dl.reminder_offsets_days = updates["reminder_offsets_days"]
     if "personal_custom_alerts" in updates and updates["personal_custom_alerts"] is not None:
-        dl.personal_custom_alerts = updates["personal_custom_alerts"]
+        other_alerts = [
+            a
+            for a in (dl.personal_custom_alerts or [])
+            if isinstance(a, dict) and a.get("user_id") != current_user.id
+        ]
+        own_alerts = [
+            a
+            for a in updates["personal_custom_alerts"]
+            if isinstance(a, dict) and a.get("user_id") == current_user.id and a.get("fire_at")
+        ]
+        dl.personal_custom_alerts = other_alerts + own_alerts
 
     override_triggered = (
         ("due_date" in updates and dl.due_date != old_due_date)
@@ -778,6 +798,9 @@ def update_deadline(
         dl.override_reason = (
             updates.get("override_reason") or dl.override_reason or "律师手动调整到期日"
         )
+        if "due_date" in updates and dl.due_date != old_due_date:
+            dl.raw_due_date = dl.due_date
+            dl.roll_reason = f"人工调整到期日：{dl.override_reason}"
         record_audit_log(
             session,
             actor_user_id=current_user.id,
@@ -933,13 +956,16 @@ def update_schedule(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
     if sched.case_id is not None:
         check_case_access(session.get(Case, sched.case_id), current_user, session)
-    elif sched.owner_id != current_user.id and current_user.system_role != SystemRole.ADMIN:
+    elif sched.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     updates = payload.model_dump(exclude_unset=True)
-    if "case_id" in updates and updates["case_id"] is not None:
-        check_case_access(session.get(Case, updates["case_id"]), current_user, session)
-        sched.case_id = updates["case_id"]
+    if "case_id" in updates:
+        if updates["case_id"] is not None:
+            check_case_access(session.get(Case, updates["case_id"]), current_user, session)
+            sched.case_id = updates["case_id"]
+        else:
+            sched.case_id = None
     if "category" in updates and updates["category"] is not None:
         sched.category = updates["category"].strip()
     if "title" in updates and updates["title"] is not None:
@@ -971,6 +997,15 @@ def update_schedule(
         sched.is_completed = bool(updates["is_completed"])
 
     session.add(sched)
+    record_audit_log(
+        session,
+        actor_user_id=current_user.id,
+        action="schedule.update",
+        entity_type="schedule_item",
+        entity_id=sched.id,
+        case_id=sched.case_id,
+        detail={"title": sched.title, "updates": payload.model_dump(mode="json", exclude_unset=True)},
+    )
     session.commit()
     session.refresh(sched)
     return sched
@@ -987,7 +1022,7 @@ def delete_schedule(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
     if sched.case_id is not None:
         check_case_access(session.get(Case, sched.case_id), current_user, session)
-    elif sched.owner_id != current_user.id and current_user.system_role != SystemRole.ADMIN:
+    elif sched.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     record_audit_log(

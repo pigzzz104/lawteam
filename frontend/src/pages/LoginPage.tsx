@@ -146,7 +146,7 @@ export function LoginPage() {
             </div>
 
             {errorMsg && (
-              <div role="alert" aria-live="polite" className="lt-alert-error">
+              <div role="alert" className="lt-alert-error">
                 {errorMsg}
               </div>
             )}
@@ -160,26 +160,28 @@ export function LoginPage() {
             </button>
           </form>
 
-          <details className="group border-t border-[var(--md-sys-color-outline-variant)]/75 pt-4">
-            <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]">
-              <span>演示账号快速切换（默认密码 LawTeam@2026）</span>
-              <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="mt-3 grid grid-cols-1 gap-2">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.username}
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => quickLogin(acc.username)}
-                  className="flex items-center justify-between rounded-2xl border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2.5 text-left text-xs transition-colors hover:border-[var(--md-sys-color-primary)] hover:bg-[var(--md-sys-color-secondary-container)]"
-                >
-                  <span className="font-semibold text-[var(--md-sys-color-on-surface)]">{acc.label}</span>
-                  <span className="font-mono text-[var(--md-sys-color-on-surface-variant)]">{acc.username}</span>
-                </button>
-              ))}
-            </div>
-          </details>
+          {healthQuery.data?.env === "development" && (
+            <details className="group border-t border-[var(--md-sys-color-outline-variant)]/75 pt-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]">
+                <span>演示账号快速切换（默认密码 LawTeam@2026）</span>
+                <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                {DEMO_ACCOUNTS.map((acc) => (
+                  <button
+                    key={acc.username}
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => quickLogin(acc.username)}
+                    className="flex items-center justify-between rounded-2xl border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2.5 text-left text-xs transition-colors hover:border-[var(--md-sys-color-primary)] hover:bg-[var(--md-sys-color-secondary-container)]"
+                  >
+                    <span className="font-semibold text-[var(--md-sys-color-on-surface)]">{acc.label}</span>
+                    <span className="font-mono text-[var(--md-sys-color-on-surface-variant)]">{acc.username}</span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       </div>
     </main>

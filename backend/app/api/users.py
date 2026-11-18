@@ -48,6 +48,7 @@ class UserCreate(BaseModel):
     phone_os: str = "ios"
     phone_last4: Optional[str] = None
     id_card_last4: Optional[str] = None
+    court_auto_fetch_mode: Optional[str] = None
     calendar_color: str = "#3b82f6"
 
 
@@ -66,7 +67,7 @@ class UserAdminUpdate(BaseModel):
     new_password: Optional[str] = None
 
 
-def _to_summary(u: User) -> UserSummary:
+def _to_summary(u: User, *, include_secrets: bool = True) -> UserSummary:
     assert u.id is not None
     return UserSummary(
         id=u.id,
@@ -75,10 +76,10 @@ def _to_summary(u: User) -> UserSummary:
         system_role=u.system_role,
         wecom_userid=u.wecom_userid,
         notify_channel=u.notify_channel,
-        notify_target=u.notify_target,
+        notify_target=u.notify_target if include_secrets else None,
         phone_os=u.phone_os,
         phone_last4=u.phone_last4,
-        id_card_last4=u.id_card_last4,
+        id_card_last4=u.id_card_last4 if include_secrets else None,
         court_auto_fetch_mode=u.court_auto_fetch_mode,
         calendar_color=u.calendar_color,
         is_active=u.is_active,
@@ -91,9 +92,13 @@ def list_users(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[UserSummary]:
-    """List team members (visible to authenticated users for case team assignment)."""
+    """List team members (non-admins see redacted personal push targets/ID fragments)."""
     users = session.exec(select(User).order_by(User.id)).all()
-    return [_to_summary(u) for u in users]
+    is_admin = current_user.system_role == SystemRole.ADMIN
+    return [
+        _to_summary(u, include_secrets=(is_admin or u.id == current_user.id))
+        for u in users
+    ]
 
 
 @router.post("", response_model=UserSummary, status_code=status.HTTP_201_CREATED)
@@ -118,6 +123,17 @@ def create_user(
     if existing is not None:
         raise HTTPException(status_code=409, detail="Username already exists")
 
+    fetch_mode: Optional[str] = None
+    if payload.court_auto_fetch_mode is not None:
+        mode = payload.court_auto_fetch_mode.strip().lower()
+        if mode:
+            if mode not in ALLOWED_COURT_AUTO_FETCH_MODES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"court_auto_fetch_mode must be one of {ALLOWED_COURT_AUTO_FETCH_MODES}",
+                )
+            fetch_mode = mode
+
     user = User(
         username=username,
         full_name=payload.full_name.strip(),
@@ -129,6 +145,7 @@ def create_user(
         phone_os=payload.phone_os,
         phone_last4=payload.phone_last4.strip()[:4] if payload.phone_last4 else None,
         id_card_last4=payload.id_card_last4.strip()[:4] if payload.id_card_last4 else None,
+        court_auto_fetch_mode=fetch_mode,
         calendar_color=payload.calendar_color,
     )
     session.add(user)
@@ -161,6 +178,8 @@ def update_user(
     if payload.full_name is not None:
         user.full_name = payload.full_name.strip() or user.full_name
     if payload.system_role is not None:
+        if user.id == admin_user.id and payload.system_role != SystemRole.ADMIN:
+            raise HTTPException(status_code=400, detail="Cannot demote yourself from admin")
         user.system_role = payload.system_role
     if payload.wecom_userid is not None:
         user.wecom_userid = payload.wecom_userid.strip() or None

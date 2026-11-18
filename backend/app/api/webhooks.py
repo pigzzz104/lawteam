@@ -20,9 +20,9 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.config import get_settings
-from app.core.security import decode_triage_action_token
+from app.core.security import check_triage_access, decode_triage_action_token
 from app.database import get_session
-from app.models.entities import InboxTriageItem, SystemRole, User
+from app.models.entities import Case, InboxTriageItem, User
 from app.services.sms_normalizer import normalize_sms_request, verify_hmac_signature
 from app.services.triage_pipeline import (
     enrich_and_fetch_triage_item,
@@ -34,6 +34,7 @@ from app.services.wecom_callback import (
     parse_triage_event_key,
     parse_wecom_xml,
     render_quick_action_html,
+    render_triage_action_confirm_html,
     verify_wecom_signature,
 )
 
@@ -132,12 +133,11 @@ async def receive_sms_webhook_path(
     return await _handle_sms_webhook(webhook_token.strip(), request, background_tasks, session)
 
 
-def _run_signed_quick_action(
+def _resolve_signed_quick_action_context(
     *,
     token: str,
     session: Session,
-    source: str,
-) -> tuple[dict, int]:
+) -> tuple[dict, User, InboxTriageItem]:
     payload = decode_triage_action_token(token)
     try:
         user_id = int(payload["sub"])
@@ -149,12 +149,25 @@ def _run_signed_quick_action(
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
-    item = session.get(InboxTriageItem, triage_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Triage item not found")
-    if user.system_role != SystemRole.ADMIN and item.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied to triage item")
+    item = check_triage_access(session, user, session.get(InboxTriageItem, triage_id))
+    current_epoch = int((item.extracted_payload or {}).get("action_epoch") or 0)
+    token_epoch = int(payload.get("action_epoch") or 0)
+    if token_epoch != current_epoch:
+        raise HTTPException(
+            status_code=409,
+            detail="This quick-action link has been invalidated after reopen",
+        )
+    return payload, user, item
 
+
+def _run_signed_quick_action(
+    *,
+    token: str,
+    session: Session,
+    source: str,
+) -> tuple[dict, int]:
+    payload, user, item = _resolve_signed_quick_action_context(token=token, session=session)
+    assert item.id is not None
     result = execute_triage_quick_action(
         session,
         item=item,
@@ -163,19 +176,56 @@ def _run_signed_quick_action(
         case_id=payload.get("case_id"),
         source=source,
     )
-    return result, triage_id
+    return result, item.id
 
 
-@router.api_route("/triage-action", methods=["GET", "POST"])
-def handle_signed_triage_quick_action(
-    request: Request,
+@router.get("/triage-action")
+def preview_signed_triage_quick_action(
     token: str = Query(...),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    """Render a read-only confirmation page for signed mobile links (never mutates DB on GET)."""
+    clean_tok = token.strip()
+    payload, user, item = _resolve_signed_quick_action_context(token=clean_tok, session=session)
+    resolved_case_id = payload.get("case_id") or item.matched_case_id
+    target_case = session.get(Case, resolved_case_id) if resolved_case_id else None
+    if target_case is not None and target_case.visibility.value == "private" and target_case.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied for private case")
+    settings = get_settings()
+    return HTMLResponse(
+        content=render_triage_action_confirm_html(
+            token=clean_tok,
+            action=str(payload.get("action") or ""),
+            item=item,
+            target_case=target_case,
+            frontend_base_url=settings.frontend_base_url,
+        )
+    )
+
+
+@router.post("/triage-action")
+async def execute_signed_triage_quick_action(
+    request: Request,
+    token: Optional[str] = Query(default=None),
     response_format: Optional[str] = Query(default=None, alias="format"),
     session: Session = Depends(get_session),
 ) -> Response:
-    """Handle signed mobile quick-action links embedded in WeCom/personal WeChat alerts."""
+    """Execute signed mobile quick-action links via explicit POST."""
+    resolved_token = (token or "").strip()
+    if not resolved_token:
+        ct = (request.headers.get("content-type") or "").lower()
+        if "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
+            form = await request.form()
+            resolved_token = str(form.get("token") or "").strip()
+        elif "application/json" in ct:
+            body = await request.json()
+            if isinstance(body, dict):
+                resolved_token = str(body.get("token") or "").strip()
+    if not resolved_token:
+        raise HTTPException(status_code=400, detail="Missing triage action token")
+
     result, triage_id = _run_signed_quick_action(
-        token=token.strip(), session=session, source="wechat_quick_link"
+        token=resolved_token, session=session, source="wechat_quick_link"
     )
     wants_json = (
         response_format == "json"
@@ -238,16 +288,21 @@ async def receive_wecom_callback_event(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid WeCom XML payload: {exc}") from exc
 
+    if not settings.wecom_callback_token:
+        raise HTTPException(status_code=503, detail="WECOM_CALLBACK_TOKEN is not configured")
+
     encrypted = outer.get("Encrypt", "")
-    if settings.wecom_callback_token:
-        if not verify_wecom_signature(
-            settings.wecom_callback_token,
-            timestamp or "",
-            nonce or "",
-            msg_signature or "",
-            encrypted,
-        ):
-            raise HTTPException(status_code=403, detail="Invalid WeCom callback signature")
+    if not verify_wecom_signature(
+        settings.wecom_callback_token,
+        timestamp or "",
+        nonce or "",
+        msg_signature or "",
+        encrypted,
+    ):
+        raise HTTPException(status_code=403, detail="Invalid WeCom callback signature")
+
+    if settings.wecom_encoding_aes_key and not encrypted:
+        raise HTTPException(status_code=400, detail="Encrypted WeCom payload is required")
 
     if encrypted:
         if not settings.wecom_encoding_aes_key:
@@ -279,11 +334,7 @@ async def receive_wecom_callback_event(
         raise HTTPException(status_code=403, detail="Unrecognized or inactive WeCom user")
 
     action, triage_id, case_id = parsed_key
-    item = session.get(InboxTriageItem, triage_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Triage item not found")
-    if actor.system_role != SystemRole.ADMIN and item.owner_user_id != actor.id:
-        raise HTTPException(status_code=403, detail="Access denied to triage item")
+    item = check_triage_access(session, actor, session.get(InboxTriageItem, triage_id))
 
     result = execute_triage_quick_action(
         session,

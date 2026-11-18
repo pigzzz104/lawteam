@@ -215,6 +215,9 @@ def seed_auto_triage_policies(session: Session) -> int:
 
 def bootstrap_database(session: Session) -> None:
     """Run all idempotent startup seeders."""
-    seed_demo_users(session)
+    from app.config import get_settings
+
+    if get_settings().app_env.strip().lower() == "development":
+        seed_demo_users(session)
     seed_deadline_rules(session)
     seed_auto_triage_policies(session)

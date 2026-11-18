@@ -156,7 +156,10 @@ def apply_triage_to_case(
     resolved_stage = new_stage.strip() if new_stage and new_stage.strip() else None
     if not resolved_stage and auto_advance_stage and clean_event_type:
         resolved_stage = suggest_stage_for_event(
-            target_case.case_category.value, clean_event_type
+            target_case.case_category.value,
+            clean_event_type,
+            procedure_subtype=target_case.procedure_subtype,
+            current_stage=target_case.current_stage,
         )
     if resolved_stage and resolved_stage != target_case.current_stage:
         target_case.current_stage = resolved_stage
@@ -276,6 +279,7 @@ def reopen_triage_item(
                 session.delete(ev)
 
     extracted.pop("archived_subfolder", None)
+    extracted["action_epoch"] = int(extracted.get("action_epoch") or 0) + 1
     extracted["auto_archived"] = False
     extracted["triage_decision"] = "needs_confirm"
     extracted["triage_reason"] = "已撤回归档，请人工重新确认归属案件与事项"

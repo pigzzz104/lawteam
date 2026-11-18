@@ -304,14 +304,34 @@ def create_case(
         payload.procedure_subtype,
         payload.current_stage,
     )
+    if payload.visibility == CaseVisibility.PRIVATE:
+        for m in payload.members:
+            if m.user_id != current_user.id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Private cases cannot have other team members",
+                )
+
+    seen_users: dict[int, CaseMemberRole] = {current_user.id: CaseMemberRole.LEAD}
+    for m in payload.members:
+        u = session.get(User, m.user_id)
+        if u is None or not u.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Member user_id={m.user_id} not found or inactive",
+            )
+        seen_users[m.user_id] = m.role_in_case
+
+    resolved_crime_type = (payload.crime_type or "").strip() or None
+    if payload.case_category == CaseCategory.CRIMINAL and not resolved_crime_type:
+        resolved_crime_type = "一般犯罪"
+
+    now = utcnow()
     folder_rel_path = file_bridge.build_case_folder_rel_path(
         case_number=payload.case_number,
         client_name=payload.client_name,
         case_title=payload.case_title,
     )
-    file_bridge.ensure_case_directories(folder_rel_path)
-
-    now = utcnow()
     case = Case(
         case_title=payload.case_title.strip(),
         case_number=payload.case_number.strip() if payload.case_number else None,
@@ -331,7 +351,7 @@ def create_case(
         is_foreign_related=payload.is_foreign_related,
         custody_status=payload.custody_status,
         custody_place=payload.custody_place,
-        crime_type=payload.crime_type,
+        crime_type=resolved_crime_type,
         trial_mode=payload.trial_mode,
         folder_rel_path=folder_rel_path,
         created_at=now,
@@ -340,14 +360,6 @@ def create_case(
     session.add(case)
     session.flush()
     assert case.id is not None
-
-    # Ensure creator is registered as LEAD unless overridden cleanly in members payload
-    seen_users: dict[int, CaseMemberRole] = {current_user.id: CaseMemberRole.LEAD}
-    for m in payload.members:
-        u = session.get(User, m.user_id)
-        if u is None:
-            raise HTTPException(status_code=400, detail=f"Member user_id={m.user_id} not found")
-        seen_users[m.user_id] = m.role_in_case
 
     for uid, role in seen_users.items():
         session.add(CaseMember(case_id=case.id, user_id=uid, role_in_case=role))
@@ -366,6 +378,7 @@ def create_case(
         },
     )
     session.commit()
+    file_bridge.ensure_case_directories(folder_rel_path)
     session.refresh(case)
     return get_case_detail(case.id, current_user=current_user, session=session)
 
@@ -429,6 +442,16 @@ def update_case(
     if not updates:
         return get_case_detail(case.id, current_user=current_user, session=session)
 
+    sensitive_fields = {"visibility", "is_archived", "case_category"}
+    if any(f in updates and getattr(case, f) != updates[f] for f in sensitive_fields):
+        check_case_access(case, current_user, session, require_manage=True)
+    if "visibility" in updates and updates["visibility"] == CaseVisibility.PRIVATE:
+        if case.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the case owner can change visibility to private",
+            )
+
     non_nullable_fields = {
         "case_title",
         "client_name",
@@ -444,6 +467,10 @@ def update_case(
             raise HTTPException(status_code=400, detail=f"{req_field} cannot be null")
 
     old_stage = case.current_stage
+    old_visibility = case.visibility
+    rule_affecting_fields = ("case_category", "is_foreign_related", "custody_status", "crime_type")
+    old_rule_snapshot = {f: getattr(case, f) for f in rule_affecting_fields}
+
     if "client_id_last4" in updates:
         raw_id4 = updates["client_id_last4"]
         updates["client_id_last4"] = raw_id4.strip()[:4] if raw_id4 and raw_id4.strip() else None
@@ -455,11 +482,35 @@ def update_case(
                 val = val or None
         setattr(case, field, val)
 
+    if case.case_category == CaseCategory.CRIMINAL and not case.crime_type:
+        case.crime_type = "一般犯罪"
+
+    if old_visibility != CaseVisibility.PRIVATE and case.visibility == CaseVisibility.PRIVATE:
+        other_members = session.exec(
+            select(CaseMember).where(
+                CaseMember.case_id == case.id,
+                CaseMember.user_id != case.owner_id,
+            )
+        ).all()
+        for om in other_members:
+            session.delete(om)
+
     if "current_stage" in updates and updates["current_stage"] != old_stage:
         case.stage_entered_at = utcnow()
     case.updated_at = utcnow()
 
     session.add(case)
+    session.flush()
+
+    if any(getattr(case, f) != old_rule_snapshot[f] for f in rule_affecting_fields):
+        from app.services.deadline_engine import derive_deadlines_for_event
+
+        case_events = list(
+            session.exec(select(CaseEvent).where(CaseEvent.case_id == case.id)).all()
+        )
+        for ev in case_events:
+            derive_deadlines_for_event(session, case, ev)
+
     record_audit_log(
         session,
         actor_user_id=current_user.id,
@@ -484,10 +535,19 @@ def replace_case_members(
     case = check_case_access(session.get(Case, case_id), current_user, session, require_manage=True)
     assert case.id is not None
 
+    if case.visibility == CaseVisibility.PRIVATE:
+        for m in members:
+            if m.user_id != case.owner_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Private cases cannot have other team members",
+                )
+
     dedup: dict[int, CaseMemberRole] = {}
     for m in members:
-        if session.get(User, m.user_id) is None:
-            raise HTTPException(status_code=400, detail=f"User {m.user_id} not found")
+        u = session.get(User, m.user_id)
+        if u is None or not u.is_active:
+            raise HTTPException(status_code=400, detail=f"User {m.user_id} not found or inactive")
         dedup[m.user_id] = m.role_in_case
 
     if not dedup:
@@ -549,7 +609,12 @@ def create_case_event(
 
     from app.services.sms_parser import suggest_stage_for_event
 
-    suggested_stage = suggest_stage_for_event(case.case_category.value, event.event_type)
+    suggested_stage = suggest_stage_for_event(
+        case.case_category.value,
+        event.event_type,
+        procedure_subtype=case.procedure_subtype,
+        current_stage=case.current_stage,
+    )
     if suggested_stage and suggested_stage != case.current_stage:
         now = utcnow()
         case.current_stage = suggested_stage

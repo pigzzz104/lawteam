@@ -8,10 +8,16 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.config import get_settings
-from app.core.security import check_case_access, get_accessible_case_ids_filter, get_current_user
+from app.core.security import (
+    check_case_access,
+    get_accessible_case_ids_filter,
+    get_current_user,
+    require_admin,
+)
 from app.database import get_session
 from app.models.entities import (
     Case,
+    CaseVisibility,
     Deadline,
     InboxTriageItem,
     ReminderDelivery,
@@ -60,74 +66,108 @@ def list_reminder_deliveries(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[ReminderDelivery]:
-    """List reminder delivery ledger records visible to the current user."""
+    """List reminder delivery ledger records visible to the current user (PRIVATE-isolated)."""
     assert current_user.id is not None
-    stmt = select(ReminderDelivery).order_by(ReminderDelivery.id.desc())  # type: ignore[union-attr]
+    base_stmt = select(ReminderDelivery).order_by(ReminderDelivery.id.desc())  # type: ignore[union-attr]
     if status_filter:
-        stmt = stmt.where(ReminderDelivery.status == status_filter)
+        base_stmt = base_stmt.where(ReminderDelivery.status == status_filter)
     if source_type:
-        stmt = stmt.where(ReminderDelivery.source_type == source_type)
-
-    rows = list(session.exec(stmt.limit(limit * 3 if current_user.system_role != SystemRole.ADMIN else limit)).all())
-    if current_user.system_role == SystemRole.ADMIN:
-        return rows[:limit]
+        base_stmt = base_stmt.where(ReminderDelivery.source_type == source_type)
 
     accessible_ids = get_accessible_case_ids_filter(current_user, session)
-    dl_ids = {r.source_id for r in rows if r.source_type == "deadline"}
-    sched_ids = {r.source_id for r in rows if r.source_type == "schedule"}
-    triage_ids = {r.source_id for r in rows if r.source_type == "triage_alert"}
-
-    dl_cases = (
-        {
-            d.id: d.case_id
-            for d in session.exec(select(Deadline).where(Deadline.id.in_(dl_ids))).all()  # type: ignore[union-attr]
-            if d.id is not None
-        }
-        if dl_ids
-        else {}
-    )
-    sched_map = (
-        {
-            s.id: s
-            for s in session.exec(select(ScheduleItem).where(ScheduleItem.id.in_(sched_ids))).all()  # type: ignore[union-attr]
-            if s.id is not None
-        }
-        if sched_ids
-        else {}
-    )
-    triage_owners = (
-        {
-            t.id: t.owner_user_id
-            for t in session.exec(select(InboxTriageItem).where(InboxTriageItem.id.in_(triage_ids))).all()  # type: ignore[union-attr]
-            if t.id is not None
-        }
-        if triage_ids
-        else {}
-    )
-
+    is_admin = current_user.system_role == SystemRole.ADMIN
     visible: list[ReminderDelivery] = []
-    for row in rows:
-        if current_user.id in (row.recipient_user_ids or []):
-            visible.append(row)
-        elif row.source_type == "deadline" and dl_cases.get(row.source_id) in accessible_ids:
-            visible.append(row)
-        elif row.source_type == "schedule":
-            sched = sched_map.get(row.source_id)
-            if sched is not None and (
-                sched.owner_id == current_user.id
-                or (sched.case_id is not None and sched.case_id in accessible_ids)
-            ):
-                visible.append(row)
-        elif row.source_type == "triage_alert" and triage_owners.get(row.source_id) == current_user.id:
-            visible.append(row)
-        if len(visible) >= limit:
+    batch_size = max(limit * 3, 200)
+    offset = 0
+
+    while len(visible) < limit:
+        rows = list(session.exec(base_stmt.offset(offset).limit(batch_size)).all())
+        if not rows:
             break
+        offset += len(rows)
+
+        dl_ids = {r.source_id for r in rows if r.source_type == "deadline"}
+        sched_ids = {r.source_id for r in rows if r.source_type == "schedule"}
+        triage_ids = {r.source_id for r in rows if r.source_type == "triage_alert"}
+
+        dl_cases = (
+            {
+                d.id: d.case_id
+                for d in session.exec(select(Deadline).where(Deadline.id.in_(dl_ids))).all()  # type: ignore[union-attr]
+                if d.id is not None
+            }
+            if dl_ids
+            else {}
+        )
+        sched_map = (
+            {
+                s.id: s
+                for s in session.exec(select(ScheduleItem).where(ScheduleItem.id.in_(sched_ids))).all()  # type: ignore[union-attr]
+                if s.id is not None
+            }
+            if sched_ids
+            else {}
+        )
+        triage_map = (
+            {
+                t.id: t
+                for t in session.exec(select(InboxTriageItem).where(InboxTriageItem.id.in_(triage_ids))).all()  # type: ignore[union-attr]
+                if t.id is not None
+            }
+            if triage_ids
+            else {}
+        )
+        case_ids_needed = set(dl_cases.values()) | {
+            s.case_id for s in sched_map.values() if s.case_id is not None
+        } | {
+            t.matched_case_id for t in triage_map.values() if t.matched_case_id is not None
+        }
+        private_other_cases: set[int] = set()
+        if case_ids_needed:
+            for c in session.exec(select(Case).where(Case.id.in_(case_ids_needed))).all():  # type: ignore[union-attr]
+                if c.id is not None and c.visibility == CaseVisibility.PRIVATE and c.owner_id != current_user.id:
+                    private_other_cases.add(c.id)
+
+        for row in rows:
+            if row.source_type == "deadline":
+                cid = dl_cases.get(row.source_id)
+                if cid in private_other_cases:
+                    continue
+                if is_admin or cid in accessible_ids or current_user.id in (row.recipient_user_ids or []):
+                    visible.append(row)
+            elif row.source_type == "schedule":
+                sched = sched_map.get(row.source_id)
+                if sched is None:
+                    continue
+                if sched.case_id is None:
+                    if sched.owner_id == current_user.id:
+                        visible.append(row)
+                else:
+                    if sched.case_id in private_other_cases:
+                        continue
+                    if is_admin or sched.case_id in accessible_ids or current_user.id in (row.recipient_user_ids or []):
+                        visible.append(row)
+            elif row.source_type == "triage_alert":
+                tr = triage_map.get(row.source_id)
+                if tr is None:
+                    continue
+                if tr.matched_case_id in private_other_cases:
+                    continue
+                if tr.owner_user_id == current_user.id or (is_admin and tr.matched_case_id not in private_other_cases):
+                    visible.append(row)
+
+            if len(visible) >= limit:
+                break
+
+        if len(rows) < batch_size:
+            break
+
     return visible
 
 
 @router.post("/run-once", response_model=ReminderSweepResponse)
 def trigger_reminder_sweep(
-    current_user: User = Depends(get_current_user),
+    admin_user: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> ReminderSweepResponse:
     """Evaluate all currently due reminders immediately (idempotent)."""

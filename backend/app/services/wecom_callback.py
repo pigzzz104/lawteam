@@ -14,7 +14,7 @@ from typing import Any, Optional
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlmodel import Session
 
-from app.core.security import check_case_access
+from app.core.security import check_case_access, check_triage_access
 from app.models.entities import Case, InboxTriageItem, TriageStatus, User
 from app.services.triage_archiver import apply_triage_to_case, mark_triage_ignored
 
@@ -119,6 +119,7 @@ def execute_triage_quick_action(
     source: str = "wecom_callback",
 ) -> dict[str, Any]:
     """Atomically execute confirm/ignore on a triage item and persist AuditLog."""
+    check_triage_access(session, actor_user, item)
     if item.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
         return {
             "ok": True,
@@ -212,4 +213,57 @@ def render_quick_action_html(result: dict[str, Any], frontend_base_url: str, tri
         f"<h1>{title}</h1><p>{msg}</p>"
         f"<a class='btn' href='{html.escape(target_url)}'>前往系统查看</a>"
         "</div></body></html>"
+    )
+
+
+def render_triage_action_confirm_html(
+    *,
+    token: str,
+    action: str,
+    item: InboxTriageItem,
+    target_case: Optional[Case],
+    frontend_base_url: str,
+) -> str:
+    """Render a read-only GET confirmation page that posts to /api/webhooks/triage-action."""
+    triage_id = item.id or 0
+    base = frontend_base_url.rstrip("/")
+    payload = item.extracted_payload or {}
+    hint = html.escape(str(payload.get("doc_title_hint") or payload.get("case_number") or f"待分拣项 #{triage_id}"))
+    if item.status in (TriageStatus.CONFIRMED, TriageStatus.IGNORED):
+        return render_quick_action_html(
+            {
+                "ok": True,
+                "case_id": item.matched_case_id,
+                "message": "该收件箱事项此前已处理完成，无需重复操作。",
+            },
+            frontend_base_url,
+            triage_id,
+        )
+
+    is_confirm = action.strip().lower() == "confirm"
+    action_label = "确认归入案件" if is_confirm else "忽略该条短信/通知"
+    case_line = (
+        f"<p><strong>目标案件：</strong>{html.escape(target_case.case_title)}</p>"
+        if is_confirm and target_case is not None
+        else ""
+    )
+    btn_bg = "#1b56b3" if is_confirm else "#b3261e"
+    return (
+        "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'/>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+        f"<title>LawTeam-OS 确认操作</title>"
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f7f9fc;margin:0;padding:24px;color:#181c23;}"
+        ".card{max-width:460px;margin:32px auto;background:#fff;border-radius:20px;padding:24px;border:1px solid #cdd5e2;}"
+        "h1{font-size:18px;margin:0 0 12px;}p{font-size:14px;line-height:1.6;color:#434955;margin:6px 0;}"
+        f".btn-submit{{display:inline-block;margin-top:16px;padding:10px 20px;border:0;border-radius:999px;background:{btn_bg};color:#fff;font-size:14px;font-weight:600;cursor:pointer;}}"
+        ".btn-link{display:inline-block;margin-left:12px;color:#1b56b3;text-decoration:none;font-size:14px;}"
+        "</style></head><body><div class='card'>"
+        f"<h1>请确认：{html.escape(action_label)}</h1>"
+        f"<p><strong>事项：</strong>{hint}</p>"
+        f"{case_line}"
+        "<form method='post' action='/api/webhooks/triage-action'>"
+        f"<input type='hidden' name='token' value='{html.escape(token)}' />"
+        f"<button type='submit' class='btn-submit'>{html.escape(action_label)}</button>"
+        f"<a class='btn-link' href='{html.escape(base)}/inbox?id={triage_id}'>打开工作台</a>"
+        "</form></div></body></html>"
     )

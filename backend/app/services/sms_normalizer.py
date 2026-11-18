@@ -90,9 +90,15 @@ def _decode_raw_body(raw_body: bytes, content_type: str) -> dict[str, Any]:
             if "application/json" in ct:
                 raise ValueError("Invalid JSON SMS webhook payload")
 
-    if "application/x-www-form-urlencoded" in ct or ("=" in text and "&" in text and "{" not in text):
+    if "application/x-www-form-urlencoded" in ct:
         qs = parse_qs(text, keep_blank_values=False)
         return {k: v[0] for k, v in qs.items() if v}
+
+    if "=" in text and "&" in text and "{" not in text:
+        qs = parse_qs(text, keep_blank_values=False)
+        parsed_form = {k: v[0] for k, v in qs.items() if v}
+        if any(k in parsed_form for k in ("content", "msg", "text", "body", "message", "sms")):
+            return parsed_form
 
     return {"content": text}
 
@@ -219,7 +225,10 @@ def verify_hmac_signature(user: User, normalized: NormalizedSmsPayload) -> bool:
     candidates.append(base64.b64encode(content_digest).decode("ascii"))
 
     sig_clean = unquote_plus(sig)
+    sig_bytes = sig.encode("utf-8")
+    sig_clean_bytes = sig_clean.encode("utf-8")
     return any(
-        hmac.compare_digest(sig, c) or hmac.compare_digest(sig_clean, c)
+        hmac.compare_digest(sig_bytes, c.encode("utf-8"))
+        or hmac.compare_digest(sig_clean_bytes, c.encode("utf-8"))
         for c in candidates
     )

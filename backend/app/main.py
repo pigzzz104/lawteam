@@ -30,17 +30,22 @@ def _scheduled_reminder_job() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings.cases_root_path.mkdir(parents=True, exist_ok=True)
+    runtime_settings = get_settings()
+    if runtime_settings.app_env.strip().lower() != "development" and runtime_settings.is_default_jwt_secret():
+        raise RuntimeError(
+            "Refusing to start in non-development environment with default or weak JWT_SECRET_KEY."
+        )
+    runtime_settings.cases_root_path.mkdir(parents=True, exist_ok=True)
     with Session(engine) as session:
         bootstrap_database(session)
 
     scheduler: AsyncIOScheduler | None = None
-    if settings.enable_reminder_scheduler and not os.environ.get("PYTEST_CURRENT_TEST"):
-        scheduler = AsyncIOScheduler(timezone=settings.timezone)
+    if runtime_settings.enable_reminder_scheduler and not os.environ.get("PYTEST_CURRENT_TEST"):
+        scheduler = AsyncIOScheduler(timezone=runtime_settings.timezone)
         scheduler.add_job(
             _scheduled_reminder_job,
             trigger="interval",
-            seconds=max(15, settings.reminder_poll_interval_seconds),
+            seconds=max(15, runtime_settings.reminder_poll_interval_seconds),
             id="lawteam_reminder_sweep",
             replace_existing=True,
             max_instances=1,

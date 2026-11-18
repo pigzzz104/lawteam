@@ -15,6 +15,7 @@ from app.models.entities import (
     Case,
     CaseMember,
     CaseMemberRole,
+    CaseVisibility,
     Deadline,
     InboxTriageItem,
     NotifyTargetType,
@@ -85,6 +86,9 @@ def resolve_deadline_recipients(
     days_remaining: int,
 ) -> tuple[list[int], bool]:
     """Resolve recipient user IDs and whether supervisor escalation triggered."""
+    if case.visibility == CaseVisibility.PRIVATE:
+        return [case.owner_id], False
+
     members_by_role = _load_case_members_by_role(session, deadline.case_id)
     lead_and_cocounsel = set(members_by_role[CaseMemberRole.LEAD]) | set(
         members_by_role[CaseMemberRole.CO_COUNSEL]
@@ -124,6 +128,9 @@ def resolve_schedule_recipients(
     sched: ScheduleItem,
 ) -> list[int]:
     """Resolve recipient user IDs for a calendar ScheduleItem."""
+    if case is not None and case.visibility == CaseVisibility.PRIVATE:
+        return [case.owner_id]
+
     target_type = sched.notify_target_type
     recipient_ids: set[int] = set()
 
@@ -390,6 +397,7 @@ def _build_triage_card_actions(
     """Generate signed quick-action links and WeCom interactive template_card buttons."""
     assert item.id is not None
     api_base = settings.public_api_url.rstrip("/")
+    epoch = int((item.extracted_payload or {}).get("action_epoch") or 0)
     buttons: list[dict[str, Any]] = []
     links_md: list[str] = []
 
@@ -399,6 +407,7 @@ def _build_triage_card_actions(
             triage_id=item.id,
             action="confirm",
             case_id=item.matched_case_id,
+            action_epoch=epoch,
         )
         confirm_url = f"{api_base}/api/webhooks/triage-action?token={confirm_tok}"
         links_md.append(f"[一键确认归入推荐案件]({confirm_url})")
@@ -414,6 +423,7 @@ def _build_triage_card_actions(
         user_id=item.owner_user_id,
         triage_id=item.id,
         action="ignore",
+        action_epoch=epoch,
     )
     ignore_url = f"{api_base}/api/webhooks/triage-action?token={ignore_tok}"
     links_md.append(f"[忽略该条]({ignore_url})")

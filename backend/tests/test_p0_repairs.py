@@ -468,7 +468,10 @@ def test_wecom_callback_aes_verification_and_quick_action_loop(
         # 3. Signed one-tap quick-action link for IGNORE
         wh2 = client.post(
             f"/api/webhooks/sms/{webhook_tok}",
-            json={"content": "待忽略通知短信测试", "dedup_key": f"p0-ign-{secrets.token_hex(6)}"},
+            json={
+                "content": "【上海某法院】请查收案件通知，案号待核对",
+                "dedup_key": f"p0-ign-{secrets.token_hex(6)}",
+            },
         )
         assert wh2.status_code == 202
         sms_ids.append(wh2.json()["sms_id"])
@@ -476,7 +479,14 @@ def test_wecom_callback_aes_verification_and_quick_action_loop(
         triage_ids.append(triage2_id)
 
         tok = create_triage_action_token(user_id=lead_id, triage_id=triage2_id, action="ignore")
-        act_resp = client.get(f"/api/webhooks/triage-action?token={tok}&format=json")
+        preview_resp = client.get(f"/api/webhooks/triage-action?token={tok}")
+        assert preview_resp.status_code == 200
+        assert "忽略" in preview_resp.text
+        with Session(engine) as session:
+            still_pending = session.get(InboxTriageItem, triage2_id)
+            assert still_pending is not None and still_pending.status == TriageStatus.PENDING
+
+        act_resp = client.post(f"/api/webhooks/triage-action?token={tok}&format=json")
         assert act_resp.status_code == 200, act_resp.text
         assert act_resp.json()["status"] == "ignored"
     finally:

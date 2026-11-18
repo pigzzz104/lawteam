@@ -412,7 +412,10 @@ def test_personal_custom_alerts_completed_skip_and_schedule_reminders(client: Te
         assert assist_delivs.status_code == 200
         assert any(d["source_id"] == dl_active_id for d in assist_delivs.json())
 
-        run_once = client.post("/api/reminders/run-once", headers=lawyer_headers)
+        run_once_forbidden = client.post("/api/reminders/run-once", headers=lawyer_headers)
+        assert run_once_forbidden.status_code == 403
+
+        run_once = client.post("/api/reminders/run-once", headers=admin_headers)
         assert run_once.status_code == 200
         assert "sent_count" in run_once.json()
     finally:

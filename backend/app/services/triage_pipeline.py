@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -389,20 +390,46 @@ def ingest_sms_and_create_triage(
         sms_category=parsed["sms_category"],
         received_at=normalized.received_at,
     )
-    session.add(sms_row)
-    session.flush()
+    try:
+        session.add(sms_row)
+        session.flush()
 
-    triage = InboxTriageItem(
-        sms_id=sms_row.id,
-        owner_user_id=user.id,
-        matched_case_id=match_res.case.id if match_res.case else None,
-        item_type=parsed["item_type"],
-        status=TriageStatus.PENDING,
-        extracted_payload=parsed,
-        downloaded_files=[],
-    )
-    session.add(triage)
-    session.commit()
+        triage = InboxTriageItem(
+            sms_id=sms_row.id,
+            owner_user_id=user.id,
+            matched_case_id=match_res.case.id if match_res.case else None,
+            item_type=parsed["item_type"],
+            status=TriageStatus.PENDING,
+            extracted_payload=parsed,
+            downloaded_files=[],
+        )
+        session.add(triage)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing_sms = session.exec(
+            select(SmsInbound).where(SmsInbound.dedup_key == eff_dedup_key)
+        ).first()
+        if existing_sms is None:
+            raise
+        existing_triage = session.exec(
+            select(InboxTriageItem)
+            .where(InboxTriageItem.sms_id == existing_sms.id)
+            .order_by(InboxTriageItem.id.desc())
+        ).first()
+        if existing_triage is None:
+            existing_triage = InboxTriageItem(
+                sms_id=existing_sms.id,
+                owner_user_id=user.id,
+                item_type="invoice_archive" if existing_sms.sms_category == "invoice" else "judicial_stage_and_doc",
+                status=TriageStatus.PENDING,
+                extracted_payload={},
+            )
+            session.add(existing_triage)
+            session.commit()
+            session.refresh(existing_triage)
+        return existing_sms, existing_triage, True
+
     session.refresh(sms_row)
     session.refresh(triage)
     return sms_row, triage, False
