@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BellRing,
   Check,
@@ -173,10 +173,14 @@ export function PersonalSettings() {
     calendar_color: calendarColor,
   });
 
+  const queryClient = useQueryClient();
+
   const saveProfileMut = useMutation({
     mutationFn: () => authApi.updateMe(buildProfilePayload()),
     onSuccess: async () => {
       await refreshUser();
+      queryClient.invalidateQueries({ queryKey: ["calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
       setErrorMsg(null);
       setFeedback("通知通道与核验参数已保存");
     },
@@ -188,16 +192,20 @@ export function PersonalSettings() {
 
   const testPushMut = useMutation({
     mutationFn: async () => {
-      if (isProfileDirty) {
+      const wasDirty = isProfileDirty;
+      if (wasDirty) {
         await authApi.updateMe(buildProfilePayload());
         await refreshUser();
+        queryClient.invalidateQueries({ queryKey: ["calendar"] });
+        queryClient.invalidateQueries({ queryKey: ["users"] });
       }
-      return remindersApi.testPush();
+      const res = await remindersApi.testPush();
+      return { res, wasDirty };
     },
-    onSuccess: (res) => {
+    onSuccess: ({ res, wasDirty }) => {
       setTestResult(res);
       setErrorMsg(null);
-      if (isProfileDirty) {
+      if (wasDirty) {
         setFeedback("已保存配置并完成测试推送");
       }
     },
@@ -397,8 +405,8 @@ export function PersonalSettings() {
         <div
           className={`rounded-[var(--md-sys-shape-corner-md)] border p-4 text-xs space-y-1 ${
             testResult.ok
-              ? "border-[var(--md-sys-color-tertiary)]/35 bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)]"
-              : "border-[var(--md-sys-color-error)]/35 bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
+              ? "border-tertiary/35 bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)]"
+              : "border-error/35 bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
           }`}
         >
           <p className="flex items-center gap-1.5 font-semibold">
@@ -540,7 +548,7 @@ export function PersonalSettings() {
             </div>
           </div>
 
-          <div className="space-y-2.5 pt-2 border-t border-[var(--md-sys-color-outline-variant)]/70">
+          <div className="space-y-2.5 pt-2 border-t border-border/70">
             <span className="block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               法院电子送达文书签收策略
             </span>
@@ -607,7 +615,7 @@ export function PersonalSettings() {
             </div>
           </div>
 
-          <div className="space-y-3 border-t border-[var(--md-sys-color-outline-variant)]/70 pt-5">
+          <div className="space-y-3 border-t border-border/70 pt-5">
             <h2 className="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
               日程安排 · 个人追加提前节点
             </h2>
@@ -700,7 +708,7 @@ export function PersonalSettings() {
               </button>
             </div>
 
-            <div className="border-t border-[var(--md-sys-color-outline-variant)]/70 pt-4 space-y-2.5">
+            <div className="border-t border-border/70 pt-4 space-y-2.5">
               <div className="flex flex-wrap items-center gap-2">
                 <KeyRound className="h-4 w-4 text-[var(--md-sys-color-primary)]" aria-hidden="true" />
                 <span className="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
@@ -869,13 +877,17 @@ export function PersonalSettings() {
             <p className="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
               正在加载推送记录...
             </p>
+          ) : deliveriesQuery.isError ? (
+            <div role="alert" className="lt-alert-error">
+              推送记录加载失败：{(deliveriesQuery.error as Error)?.message || "请刷新重试"}
+            </div>
           ) : (deliveriesQuery.data ?? []).length === 0 ? (
             <p className="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
               暂无符合条件的提醒推送记录
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-[var(--md-sys-color-outline-variant)]/70 text-xs">
+              <table className="min-w-full divide-y divide-border/70 text-xs">
                 <thead>
                   <tr className="text-left font-semibold text-[var(--md-sys-color-on-surface-variant)]">
                     <th className="py-2.5 pr-4">事项与关联案件</th>
@@ -886,7 +898,7 @@ export function PersonalSettings() {
                     <th className="py-2.5">说明</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[var(--md-sys-color-outline-variant)]/50">
+                <tbody className="divide-y divide-border/50">
                   {(deliveriesQuery.data ?? []).map((row) => {
                     const stMeta = DELIVERY_STATUS_META[row.status] ?? {
                       label: row.status,

@@ -585,6 +585,16 @@ def mark_triage_ignored(
 ) -> InboxTriageItem:
     """Atomically ignore a non-confirmed triage item and write an audit entry."""
     assert actor_user.id is not None
+    if item.item_type == "invoice_archive":
+        for rel in list(item.downloaded_files or []):
+            doc = session.exec(
+                select(Document).where(
+                    Document.rel_file_path == rel,
+                    Document.case_id == None,  # noqa: E711
+                )
+            ).first()
+            if doc is not None:
+                session.delete(doc)
     item.status = TriageStatus.IGNORED
     session.add(item)
     record_audit_log(

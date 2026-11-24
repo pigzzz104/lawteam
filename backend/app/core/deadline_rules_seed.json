@@ -453,7 +453,7 @@
     },
     {
       "rule_code": "CRIM_PROCURATORATE_ARREST_7D",
-      "name": "检察院审查批捕决定期（7日/提交不予批捕意见死线）",
+      "name": "检察院审查批捕决定期（7日/提交不予批捕意见截止）",
       "case_category": "criminal",
       "trigger_event_type": "case_transferred_arrest",
       "condition_match": {},

@@ -22,6 +22,7 @@ from app.models.entities import (
     ReminderDelivery,
     RiskLevel,
     ScheduleItem,
+    SystemRole,
     TriageStatus,
     User,
     utcnow,
@@ -32,6 +33,13 @@ logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_DEADLINE_NOTIFY_HOUR = 9
 MAX_DELIVERY_RETRIES = 3
+
+_RISK_LEVEL_LABELS: dict[RiskLevel, str] = {
+    RiskLevel.CRITICAL: "紧急",
+    RiskLevel.HIGH: "重要",
+    RiskLevel.NORMAL: "常规",
+    RiskLevel.LOW: "备忘",
+}
 
 
 @dataclass
@@ -47,6 +55,13 @@ class ReminderSweepSummary:
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=SHANGHAI_TZ).astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _db_to_utc(dt: datetime) -> datetime:
+    """Interpret naive DB datetimes as UTC rather than Asia/Shanghai."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
 
@@ -113,7 +128,6 @@ def resolve_deadline_recipients(
         if (
             not deadline.is_completed
             and deadline.escalate_to_supervisor
-            and deadline.risk_level == RiskLevel.CRITICAL
             and days_remaining <= 1
             and supervisors
         ):
@@ -183,7 +197,7 @@ def _deliver_with_idempotency(
         if int(existing.retry_count or 0) >= MAX_DELIVERY_RETRIES:
             summary.already_processed_count += 1
             return
-        if existing.next_retry_at is not None and _to_utc(existing.next_retry_at) > current_now:
+        if existing.next_retry_at is not None and _db_to_utc(existing.next_retry_at) > current_now:
             summary.already_processed_count += 1
             return
 
@@ -311,14 +325,15 @@ def _evaluate_deadlines(
             title = f"{prefix}{dl.title}"
             case_no = f"（{case.case_number}）" if case.case_number else ""
             remaining_text = "今天到期" if days_remaining == 0 else f"剩余 {days_remaining} 天"
+            risk_label = _RISK_LEVEL_LABELS.get(dl.risk_level, "重要")
             markdown_body = (
                 f"- **案件**：{case.case_title}{case_no}\n"
-                f"- **事项**：{dl.title}（{dl.risk_level.value.upper()}）\n"
+                f"- **事项**：{dl.title}（{risk_label}）\n"
                 f"- **到期日**：{dl.due_date.isoformat()}（{remaining_text}）\n"
                 f"- **依据**：{dl.legal_basis or '自定义/程序规则'}"
             )
             if escalated:
-                markdown_body += "\n- **升级说明**：红线期限临期 ≤ 1 天尚未标记完成，已自动抄送督办合伙人。"
+                markdown_body += "\n- **升级说明**：该期限临期 ≤ 1 天尚未标记完成，已自动抄送督办合伙人。"
 
             _deliver_with_idempotency(
                 session=session,
@@ -387,6 +402,13 @@ def _evaluate_deadlines(
                 )
 
         # 2) Personal custom timestamp alerts
+        if dl.personal_custom_alerts:
+            member_uid_set = set(
+                session.exec(select(CaseMember.user_id).where(CaseMember.case_id == dl.case_id)).all()
+            )
+        else:
+            member_uid_set = set()
+
         for alert in dl.personal_custom_alerts or []:
             if not isinstance(alert, dict):
                 continue
@@ -394,6 +416,16 @@ def _evaluate_deadlines(
             fire_utc = _parse_iso_datetime_utc(alert.get("fire_at"))
             if not isinstance(raw_uid, int) or raw_uid not in users_by_id or fire_utc is None:
                 continue
+            if case.visibility == CaseVisibility.PRIVATE and raw_uid != case.owner_id:
+                continue
+            if case.visibility == CaseVisibility.TEAM:
+                target_user = users_by_id[raw_uid]
+                if (
+                    raw_uid != case.owner_id
+                    and target_user.system_role != SystemRole.ADMIN
+                    and raw_uid not in member_uid_set
+                ):
+                    continue
             if now_utc < fire_utc:
                 continue
 
@@ -446,7 +478,7 @@ def _evaluate_schedules(
         recipient_ids = [
             uid for uid in resolve_schedule_recipients(session, case, sched) if uid in users_by_id
         ]
-        start_utc = _to_utc(sched.start_time)
+        start_utc = _db_to_utc(sched.start_time)
         start_sh = start_utc.astimezone(SHANGHAI_TZ)
 
         offsets = sorted({int(m) for m in (sched.reminder_offsets_minutes or [])}, reverse=True)

@@ -51,6 +51,7 @@ def create_access_token(
         expires_delta or timedelta(minutes=settings.jwt_expire_minutes)
     )
     payload = {
+        "scope": "access",
         "sub": str(user_id),
         "username": username,
         "role": system_role.value,
@@ -117,6 +118,12 @@ def get_current_user(
 ) -> User:
     """Resolve the currently authenticated active user from Bearer JWT."""
     payload = decode_access_token(token)
+    if payload.get("scope") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     sub = payload.get("sub")
     if not sub:
         raise HTTPException(

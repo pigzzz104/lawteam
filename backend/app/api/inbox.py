@@ -114,6 +114,8 @@ class ConfirmCreateCasePayload(BaseModel):
     visibility: CaseVisibility = CaseVisibility.TEAM
     client_name: str = "待补充委托人"
     handling_agency: Optional[str] = None
+    crime_type: Optional[str] = None
+    charge_name: Optional[str] = None
 
 
 class ConfirmCreateHearingPayload(BaseModel):
@@ -510,6 +512,17 @@ def confirm_triage_item(
                 client_name=cc.client_name,
                 case_title=cc.case_title,
             )
+            resolved_crime_type: Optional[str] = None
+            if cc.case_category == CaseCategory.CRIMINAL:
+                raw_crime_type = (cc.crime_type or "").strip() or "一般犯罪"
+                if raw_crime_type not in ("一般犯罪", "流窜/多次/结伙作案"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="crime_type must be '一般犯罪' or '流窜/多次/结伙作案'",
+                    )
+                resolved_crime_type = raw_crime_type
+            resolved_charge_name = (cc.charge_name or "").strip() or None
+
             target_case = Case(
                 case_title=cc.case_title.strip(),
                 case_number=cc.case_number.strip() if cc.case_number else None,
@@ -521,7 +534,8 @@ def confirm_triage_item(
                 owner_id=current_user.id,
                 client_name=cc.client_name.strip(),
                 handling_agency=cc.handling_agency,
-                crime_type="一般犯罪" if cc.case_category == CaseCategory.CRIMINAL else None,
+                crime_type=resolved_crime_type,
+                charge_name=resolved_charge_name,
                 folder_rel_path=folder_rel_path,
                 created_at=now,
                 updated_at=now,
@@ -618,7 +632,12 @@ def reopen_triage_endpoint(
     session: Session = Depends(get_session),
 ) -> InboxTriageRead:
     """Undo an auto-archived or confirmed item back to PENDING so it can be re-assigned."""
-    item = _get_accessible_triage_or_404(session, current_user, triage_id)
+    locked = session.exec(
+        select(InboxTriageItem)
+        .where(InboxTriageItem.id == triage_id)
+        .with_for_update()
+    ).first()
+    item = check_triage_access(session, current_user, locked)
     if item.status == TriageStatus.IGNORED:
         extracted = dict(item.extracted_payload or {})
         extracted["action_epoch"] = int(extracted.get("action_epoch") or 0) + 1
@@ -669,7 +688,6 @@ def ignore_triage_item(
     if item.status == TriageStatus.CONFIRMED:
         raise HTTPException(status_code=409, detail="Cannot ignore an already confirmed triage item")
 
-    _cleanup_orphan_unclaimed_docs(session, item)
     mark_triage_ignored(session, item=item, actor_user=current_user, source="inbox")
     session.commit()
     session.refresh(item)

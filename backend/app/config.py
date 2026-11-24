@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080
     allow_internal_webhook_hosts: str = ""
+    initial_admin_username: str = ""
+    initial_admin_password: str = ""
+    initial_admin_full_name: str = "系统管理员"
 
     # File Bridge
     cases_root: str = str(ROOT_DIR / "data" / "cases")

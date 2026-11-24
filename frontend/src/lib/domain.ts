@@ -63,21 +63,38 @@ export const RISK_LEVEL_META: Record<
   { label: string; badgeClass: string }
 > = {
   critical: {
-    label: "致命死线",
+    label: "紧急",
     badgeClass: "bg-[#fde7e5] text-[#8c1d18] border-[#f4b8b3]",
   },
   high: {
-    label: "刚性程序",
+    label: "重要",
     badgeClass: "bg-[#fef0d1] text-[#764900] border-[#f6d48b]",
   },
   normal: {
-    label: "常规节点",
+    label: "常规",
     badgeClass: "bg-[#e1f1ff] text-[#094a7a] border-[#b7dcfa]",
   },
   low: {
-    label: "内部待办",
+    label: "备忘",
     badgeClass: "bg-[#eceff5] text-[#434955] border-[#d1d8e4]",
   },
+};
+
+export const RISK_LEVEL_OPTIONS: Array<{ value: RiskLevel; label: string }> = [
+  { value: "critical", label: "紧急" },
+  { value: "high", label: "重要" },
+  { value: "normal", label: "常规" },
+  { value: "low", label: "备忘" },
+];
+
+export const RISK_LEVEL_DEADLINE_PRESETS: Record<
+  RiskLevel,
+  { offsets: number[]; escalate: boolean }
+> = {
+  critical: { offsets: [7, 3, 1, 0], escalate: true },
+  high: { offsets: [3, 1, 0], escalate: false },
+  normal: { offsets: [1, 0], escalate: false },
+  low: { offsets: [0], escalate: false },
 };
 
 export const HOLIDAY_ROLL_LABELS: Record<HolidayRollMode, string> = {
@@ -156,11 +173,11 @@ export const TRIAGE_STATUS_META: Record<
   },
   manual: {
     label: "需验证/人工取回",
-    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-[var(--md-sys-color-error)]/30",
+    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-error/30",
   },
   confirmed: {
     label: "已确认入案",
-    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-[var(--md-sys-color-tertiary)]/30",
+    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-tertiary/30",
   },
   ignored: {
     label: "已忽略",
@@ -241,7 +258,7 @@ export function getServiceMethodLabel(method: string): string {
 export const DELIVERY_STATUS_META: Record<string, { label: string; badgeClass: string }> = {
   sent: {
     label: "已推送",
-    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-[var(--md-sys-color-tertiary)]/30",
+    badgeClass: "bg-[var(--md-sys-color-tertiary-container)] text-[var(--md-sys-color-on-tertiary-container)] border-tertiary/30",
   },
   skipped_completed: {
     label: "已办结跳过",
@@ -253,7 +270,7 @@ export const DELIVERY_STATUS_META: Record<string, { label: string; badgeClass: s
   },
   failed: {
     label: "投递失败",
-    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-[var(--md-sys-color-error)]/30",
+    badgeClass: "bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] border-error/30",
   },
 };
 
@@ -271,6 +288,29 @@ export const CUSTODY_STATUS_OPTIONS = [
 ] as const;
 
 export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
+  "case.create": "新建案件",
+  "case.auto_create": "自动建案",
+  "case.update": "更新案件信息",
+  "case.stage_change": "推进案件阶段",
+  "case.members_replace": "调整办案成员",
+  "case.event_create": "录入程序事件",
+  "case.event_recalculate": "重算程序期限",
+  "case.file_upload": "上传案件卷宗",
+  "case.file_delete": "删除案件文件",
+  "deadline.create": "创建自定义期限",
+  "deadline.override": "手动调整到期日",
+  "deadline.complete": "标记期限办结",
+  "deadline.reopen": "恢复未办结期限",
+  "deadline.update": "更新法定期限",
+  "deadline.delete": "删除期限",
+  "schedule.create": "创建日程安排",
+  "schedule.update": "更新日程安排",
+  "schedule.delete": "删除日程",
+  "inbox.auto_archive": "自动识别归档入案",
+  "inbox.confirm": "人工确认归档入案",
+  "inbox.reopen": "撤销归档回退",
+  "inbox.ignore": "忽略短信/通知",
+  "rule.recalculate": "期限规则重算",
   create_case: "新建案件",
   update_case: "更新案件信息",
   replace_members: "调整办案成员",

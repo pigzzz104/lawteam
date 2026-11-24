@@ -33,7 +33,7 @@ class CaseVisibility(str, Enum):
 class CaseMemberRole(str, Enum):
     LEAD = "lead"            # 主办律师
     CO_COUNSEL = "co"        # 协办律师/助理
-    SUPERVISOR = "supervisor"  # 督办合伙人（接收致命死线临期未办结升级预警）
+    SUPERVISOR = "supervisor"  # 督办合伙人（接收紧急期限临期未办结升级预警）
 
 
 class CaseCategory(str, Enum):
@@ -53,10 +53,10 @@ class HolidayRollMode(str, Enum):
 
 
 class RiskLevel(str, Enum):
-    CRITICAL = "critical"    # 致命法定死线（上诉期、黄金37天批捕、再审、执行、保全续封）
-    HIGH = "high"            # 刚性程序日程（开庭、举证期、答辩期、行政被告举证、会见）
-    NORMAL = "normal"        # 阶段跟踪与常规节点
-    LOW = "low"              # 个人内部待办
+    CRITICAL = "critical"    # 紧急法定期限（上诉期、黄金37天批捕、再审、执行、保全续封）
+    HIGH = "high"            # 重要程序节点（开庭、举证期、答辩期、行政被告举证、会见）
+    NORMAL = "normal"        # 常规程序节点
+    LOW = "low"              # 个人备忘事项
 
 
 class NotifyTargetType(str, Enum):

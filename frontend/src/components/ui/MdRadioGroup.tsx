@@ -51,7 +51,7 @@ export function MdRadioGroup<T extends string>({
             onClick={() => onChange(opt.value)}
             className={`flex items-start gap-3 rounded-[var(--md-sys-shape-corner-md)] border px-3.5 py-3 text-left transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] disabled:cursor-not-allowed disabled:opacity-55 ${
               selected
-                ? "border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45 shadow-sm"
+                ? "border-[var(--md-sys-color-primary)] bg-primary-container/45 shadow-sm"
                 : "border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] hover:bg-[var(--md-sys-color-surface-container-low)]"
             }`}
           >

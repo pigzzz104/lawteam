@@ -65,7 +65,7 @@ export function ModalDialog({
         pressedOutsideRef.current = false;
       }}
     >
-      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--md-sys-color-outline-variant)]/70 px-6 py-4">
+      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/70 px-6 py-4">
         <div>
           <h2 id={titleId} className="text-base font-bold text-[var(--md-sys-color-on-surface)]">
             {title}

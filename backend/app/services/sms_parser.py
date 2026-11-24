@@ -250,23 +250,40 @@ def _extract_url_params(url: str) -> dict[str, str]:
     return params
 
 
-def _extract_hearing_time_iso(content: str, patterns: dict[str, Any]) -> Optional[str]:
+_HEARING_CONTEXT_RE = re.compile(
+    r"(开庭|定于|传唤|听证|庭审|谈话|调解|质证|庭前|出席)"
+)
+_FORWARDED_HEADER_TIMESTAMP_RE = re.compile(
+    r"^\s*[^\n【\[]{0,24}?\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?\s*(?:上午|下午)?\s*\d{1,2}[:时点]\d{0,2}分?(?=\s*[【\[])"
+)
+
+
+def _extract_hearing_time_iso(
+    content: str,
+    patterns: dict[str, Any],
+    *,
+    event_type_guess: Optional[str] = None,
+) -> Optional[str]:
+    body = _FORWARDED_HEADER_TIMESTAMP_RE.sub("", content)
     for pat in patterns.get("hearing_time_patterns", []):
-        m = re.search(pat, content)
-        if not m:
-            continue
-        raw = m.group(1)
-        nums = re.findall(r"\d+", raw)
-        if len(nums) >= 4:
-            year, month, day, hour = (int(nums[0]), int(nums[1]), int(nums[2]), int(nums[3]))
-            minute = int(nums[4]) if len(nums) >= 5 else 0
-            if "下午" in raw and hour < 12:
-                hour += 12
-            try:
-                dt = datetime(year, month, day, hour, minute, tzinfo=SHANGHAI_TZ)
-                return dt.isoformat()
-            except ValueError:
-                continue
+        for m in re.finditer(pat, body):
+            if event_type_guess != "hearing_scheduled":
+                ctx_before = body[max(0, m.start() - 32) : m.start()]
+                ctx_after = body[m.end() : min(len(body), m.end() + 16)]
+                if not (_HEARING_CONTEXT_RE.search(ctx_before) or _HEARING_CONTEXT_RE.search(ctx_after)):
+                    continue
+            raw = m.group(1)
+            nums = re.findall(r"\d+", raw)
+            if len(nums) >= 4:
+                year, month, day, hour = (int(nums[0]), int(nums[1]), int(nums[2]), int(nums[3]))
+                minute = int(nums[4]) if len(nums) >= 5 else 0
+                if "下午" in raw and hour < 12:
+                    hour += 12
+                try:
+                    dt = datetime(year, month, day, hour, minute, tzinfo=SHANGHAI_TZ)
+                    return dt.isoformat()
+                except ValueError:
+                    continue
     return None
 
 
@@ -540,7 +557,9 @@ def parse_sms_regex(
     client_hint = _extract_client_hint(clean_text)
     case_category_guess = _guess_case_category(clean_text, case_no_raw, patterns)
     event_type_guess = _guess_event_type(clean_text, doc_title_hint, patterns)
-    hearing_time = _extract_hearing_time_iso(clean_text, patterns)
+    hearing_time = _extract_hearing_time_iso(
+        clean_text, patterns, event_type_guess=event_type_guess
+    )
     event_date = _extract_event_date_iso(clean_text, fallback_dt=received_at)
 
     suggested_stage = None

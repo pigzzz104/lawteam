@@ -151,48 +151,68 @@ def update_me(
     session: Session = Depends(get_session),
 ) -> UserSelfRead:
     """Allow user to update personal mobile/WeCom profile or rotate tokens."""
-    if payload.full_name is not None:
-        current_user.full_name = payload.full_name.strip() or current_user.full_name
-    if payload.wecom_userid is not None:
-        current_user.wecom_userid = payload.wecom_userid.strip() or None
-    if payload.notify_channel is not None:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "full_name" in updates and updates["full_name"] is not None:
+        current_user.full_name = str(updates["full_name"]).strip() or current_user.full_name
+    if "wecom_userid" in updates:
+        raw_wc = updates["wecom_userid"]
+        current_user.wecom_userid = str(raw_wc).strip() or None if raw_wc is not None else None
+    if "notify_channel" in updates and updates["notify_channel"] is not None:
         allowed_channels = ("wecom", "serverchan", "wxpusher", "pushplus", "webhook")
-        ch = payload.notify_channel.strip().lower()
+        ch = str(updates["notify_channel"]).strip().lower()
         if ch not in allowed_channels:
             raise HTTPException(
                 status_code=400,
                 detail=f"notify_channel must be one of {allowed_channels}",
             )
         current_user.notify_channel = ch
-    if payload.notify_target is not None:
-        cleaned_target = payload.notify_target.strip() or None
-        eff_channel = (current_user.notify_channel or "wecom").strip().lower()
-        if cleaned_target and eff_channel == "webhook":
-            try:
-                validate_webhook_url(cleaned_target)
-            except UnsafeUrlError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        current_user.notify_target = cleaned_target
-    if payload.default_deadline_offsets_days is not None:
+    if "notify_target" in updates:
+        raw_target = updates["notify_target"]
+        current_user.notify_target = (
+            str(raw_target).strip() or None if raw_target is not None else None
+        )
+
+    eff_channel = (current_user.notify_channel or "wecom").strip().lower()
+    if eff_channel == "webhook" and current_user.notify_target:
+        try:
+            validate_webhook_url(current_user.notify_target)
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if (
+        "default_deadline_offsets_days" in updates
+        and updates["default_deadline_offsets_days"] is not None
+    ):
         current_user.default_deadline_offsets_days = sorted(
-            {int(x) for x in payload.default_deadline_offsets_days if int(x) >= 0},
+            {int(x) for x in updates["default_deadline_offsets_days"] if int(x) >= 0},
             reverse=True,
         )
-    if payload.default_schedule_offsets_minutes is not None:
+    if (
+        "default_schedule_offsets_minutes" in updates
+        and updates["default_schedule_offsets_minutes"] is not None
+    ):
         current_user.default_schedule_offsets_minutes = sorted(
-            {int(x) for x in payload.default_schedule_offsets_minutes if int(x) >= 0},
+            {int(x) for x in updates["default_schedule_offsets_minutes"] if int(x) >= 0},
             reverse=True,
         )
-    if payload.phone_os is not None:
-        if payload.phone_os not in ("ios", "android"):
+    if "phone_os" in updates and updates["phone_os"] is not None:
+        if updates["phone_os"] not in ("ios", "android"):
             raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")
-        current_user.phone_os = payload.phone_os
-    if payload.phone_last4 is not None:
-        current_user.phone_last4 = payload.phone_last4.strip()[:4] or None
-    if payload.id_card_last4 is not None:
-        current_user.id_card_last4 = payload.id_card_last4.strip()[:4] or None
-    if payload.court_auto_fetch_mode is not None:
-        mode = payload.court_auto_fetch_mode.strip().lower()
+        current_user.phone_os = updates["phone_os"]
+    if "phone_last4" in updates:
+        raw_p4 = updates["phone_last4"]
+        current_user.phone_last4 = (
+            str(raw_p4).strip()[:4] or None if raw_p4 is not None else None
+        )
+    if "id_card_last4" in updates:
+        raw_id4 = updates["id_card_last4"]
+        current_user.id_card_last4 = (
+            str(raw_id4).strip()[:4] or None if raw_id4 is not None else None
+        )
+    if "court_auto_fetch_mode" in updates:
+        raw_mode = updates["court_auto_fetch_mode"]
+        mode = str(raw_mode).strip().lower() if raw_mode is not None else ""
         if not mode:
             current_user.court_auto_fetch_mode = None
         elif mode not in ALLOWED_COURT_AUTO_FETCH_MODES:
@@ -202,10 +222,13 @@ def update_me(
             )
         else:
             current_user.court_auto_fetch_mode = mode
-    if payload.calendar_color is not None:
-        current_user.calendar_color = payload.calendar_color.strip()
-    if payload.sms_webhook_secret is not None:
-        current_user.sms_webhook_secret = payload.sms_webhook_secret.strip() or None
+    if "calendar_color" in updates and updates["calendar_color"] is not None:
+        current_user.calendar_color = str(updates["calendar_color"]).strip() or current_user.calendar_color
+    if "sms_webhook_secret" in updates:
+        raw_sec = updates["sms_webhook_secret"]
+        current_user.sms_webhook_secret = (
+            str(raw_sec).strip() or None if raw_sec is not None else None
+        )
     if payload.rotate_sms_token:
         current_user.sms_webhook_token = secrets.token_urlsafe(16)
     if payload.rotate_ics_token:

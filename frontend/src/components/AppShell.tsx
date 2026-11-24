@@ -63,7 +63,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const pendingInboxQuery = useQuery({
     queryKey: ["inbox", "items"],
-    queryFn: () => inboxApi.list(),
+    queryFn: () => inboxApi.list({ limit: 500 }),
     refetchInterval: 30_000,
     enabled: Boolean(user),
   });
@@ -84,10 +84,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   ];
 
   const renderSidebarInner = (compact: boolean, isMobile: boolean) => (
-    <div className="flex h-full flex-col bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] border-r border-[var(--md-sys-color-outline-variant)]/75">
+    <div className="flex h-full flex-col bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] border-r border-border/75">
       {/* Brand Header */}
       <div
-        className={`flex items-center border-b border-[var(--md-sys-color-outline-variant)]/65 py-4 ${
+        className={`flex items-center border-b border-border/65 py-4 ${
           compact ? "justify-center px-2.5" : "justify-between px-4"
         }`}
       >
@@ -223,7 +223,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* Account Footer */}
       {user && (
         <div
-          className={`border-t border-[var(--md-sys-color-outline-variant)]/65 ${
+          className={`border-t border-border/65 ${
             compact ? "p-2.5 space-y-2" : "p-3.5 space-y-3"
           }`}
         >
@@ -308,7 +308,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* Content Area */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container-low)]/95 backdrop-blur px-4 py-3 lg:hidden">
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border/75 bg-surface-low/95 backdrop-blur px-4 py-3 lg:hidden">
           <button
             type="button"
             aria-expanded={mobileNavOpen}

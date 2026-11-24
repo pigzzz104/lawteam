@@ -193,7 +193,6 @@ export interface ScheduleItem {
   location: string | null;
   risk_level: RiskLevel;
   notify_target_type: NotifyTargetType;
-  notify_owner_id: number | null;
   custom_notify_user_ids: number[];
   reminder_offsets_minutes: number[];
   is_completed: boolean;

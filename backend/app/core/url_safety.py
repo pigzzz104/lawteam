@@ -53,8 +53,11 @@ _BENCHMARK_FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
 def _is_private_or_reserved_ip(
     raw_ip: str, *, allow_benchmark_fake_ip: bool = False
 ) -> bool:
+    clean = raw_ip.split("%", 1)[0].strip()
+    if clean in _CLOUD_METADATA_HOSTS:
+        return True
     try:
-        ip_obj = ipaddress.ip_address(raw_ip.split("%", 1)[0])
+        ip_obj = ipaddress.ip_address(clean)
     except ValueError:
         return True
     if (
@@ -65,7 +68,8 @@ def _is_private_or_reserved_ip(
         # Local proxy TUN modes (e.g. Clash/Surge fake-IP) resolve domains into 198.18.0.0/15.
         return False
     return (
-        ip_obj.is_private
+        (not ip_obj.is_global)
+        or ip_obj.is_private
         or ip_obj.is_loopback
         or ip_obj.is_link_local
         or ip_obj.is_multicast

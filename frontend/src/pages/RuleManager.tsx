@@ -10,6 +10,7 @@ import {
   CASE_CATEGORY_META,
   EVENT_TYPE_PRESETS,
   HOLIDAY_ROLL_LABELS,
+  RISK_LEVEL_OPTIONS,
   getEventTypeLabel,
 } from "@/lib/domain";
 import type {
@@ -279,13 +280,10 @@ export function RuleManager() {
       setErrorMsg(null);
       if (updatedRule.is_enabled) {
         setFeedback(`已启用规则「${updatedRule.name}」`);
-        setPendingRecalcRule({ id: updatedRule.id, name: updatedRule.name });
       } else {
         setFeedback(`已停用规则「${updatedRule.name}」`);
-        if (pendingRecalcRule?.id === updatedRule.id) {
-          setPendingRecalcRule(null);
-        }
       }
+      setPendingRecalcRule({ id: updatedRule.id, name: updatedRule.name });
     },
     onError: (err: Error) => setErrorMsg(err.message),
   });
@@ -294,6 +292,7 @@ export function RuleManager() {
     mutationFn: (rule: { id: number; name: string }) => rulesApi.recalculate(rule.id),
     onSuccess: (res, vars) => {
       queryClient.invalidateQueries({ queryKey: ["cases"] });
+      queryClient.invalidateQueries({ queryKey: ["case-detail"] });
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
       setPendingRecalcRule(null);
       setErrorMsg(null);
@@ -435,7 +434,7 @@ export function RuleManager() {
                     期限与顺延
                   </th>
                   <th className="border-b border-[var(--md-sys-color-outline-variant)] px-4 py-3 font-semibold">
-                    风险等级
+                    重要程度
                   </th>
                   <th className="border-b border-[var(--md-sys-color-outline-variant)] px-4 py-3 font-semibold">
                     启用状态
@@ -447,7 +446,7 @@ export function RuleManager() {
                   )}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--md-sys-color-outline-variant)]/50">
+              <tbody className="divide-y divide-border/50">
                 {filteredRules.map((rule) => {
                   const conditionTags = formatConditionTags(rule.condition_match);
                   return (
@@ -455,8 +454,8 @@ export function RuleManager() {
                       key={rule.id}
                       className={
                         !rule.is_enabled
-                          ? "bg-[var(--md-sys-color-surface-container-low)]/60 opacity-75"
-                          : "hover:bg-[var(--md-sys-color-surface-container-low)]/50"
+                          ? "bg-surface-low/60 opacity-75"
+                          : "hover:bg-surface-low/50"
                       }
                     >
                       <td className="px-4 py-3 max-w-xs">
@@ -689,17 +688,18 @@ export function RuleManager() {
             </div>
             <div>
               <label htmlFor="rl-risk" className="block text-xs font-semibold mb-1">
-                风险等级
+                重要程度
               </label>
               <MdSelect
                 id="rl-risk"
                 value={riskLevel}
                 onChange={(e) => setRiskLevel(e.target.value as RiskLevel)}
               >
-                <option value="critical">致命死线</option>
-                <option value="high">刚性程序</option>
-                <option value="normal">常规节点</option>
-                <option value="low">内部待办</option>
+                {RISK_LEVEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </MdSelect>
             </div>
           </div>
@@ -802,7 +802,7 @@ export function RuleManager() {
             </div>
           </div>
 
-          <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-primary)]/25 bg-[var(--md-sys-color-primary-container)]/35 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]">
+          <div className="rounded-[var(--md-sys-shape-corner-md)] border border-primary/25 bg-primary-container/35 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]">
             <span className="font-semibold">预期效果预览：</span>
             <span>
               当「{CASE_CATEGORY_META[category].label}」发生「{getEventTypeLabel(triggerEvent)}」后，自动起算{" "}

@@ -184,7 +184,6 @@ def list_reminder_deliveries(
                     tr_title = (
                         payload.get("doc_title_hint")
                         or payload.get("agency")
-                        or tr.source_sender
                         or "待确认分拣通知"
                     )
                     visible_entries.append((row, tr.matched_case_id, str(tr_title)))

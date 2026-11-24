@@ -71,8 +71,8 @@ export function MdFileDropzone({
           disabled
             ? "cursor-not-allowed border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] opacity-60"
             : dragging
-              ? "border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/40"
-              : "border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)]/70 hover:border-[var(--md-sys-color-primary)]/60 hover:bg-[var(--md-sys-color-surface-container)]/60"
+              ? "border-[var(--md-sys-color-primary)] bg-primary-container/40"
+              : "border-[var(--md-sys-color-outline-variant)] bg-surface-low/70 hover:border-primary/60 hover:bg-surface-container/60"
         }`}
       >
         <input

@@ -15,6 +15,7 @@ from app.models.entities import (
     DeadlineRule,
     HolidayRollMode,
     NotifyTargetType,
+    RiskLevel,
 )
 
 
@@ -179,6 +180,9 @@ def _allows_authority_specified_days(rule: DeadlineRule, event: CaseEvent) -> bo
     return bool((rule.condition_match or {}).get("authority_specifiable"))
 
 
+_RULE_METADATA_KEYS = frozenset({"authority_specifiable"})
+
+
 def rule_matches_case(rule: DeadlineRule, case: Case) -> bool:
     """Enforce procedure-category and case-attribute isolation for deadline rules."""
     if not rule.is_enabled:
@@ -187,6 +191,8 @@ def rule_matches_case(rule: DeadlineRule, case: Case) -> bool:
         return False
     conditions = rule.condition_match or {}
     for key, expected in conditions.items():
+        if key in _RULE_METADATA_KEYS:
+            continue
         if not _match_condition_entry(case, key, expected):
             return False
     return True
@@ -287,7 +293,7 @@ def derive_deadlines_for_event(
             is_completed=False,
             notify_target_type=NotifyTargetType.CASE_TEAM,
             custom_notify_user_ids=[],
-            escalate_to_supervisor=True,
+            escalate_to_supervisor=(rule.risk_level == RiskLevel.CRITICAL),
             reminder_offsets_days=list(rule.default_offsets_days or [7, 3, 1, 0]),
             personal_custom_alerts=[],
         )
@@ -314,6 +320,55 @@ def recalculate_rule_deadlines(session: Session, rule: DeadlineRule) -> dict[str
         "skipped_completed_count": 0,
     }
 
+    # Prune obsolete open deadlines for this rule_code across all non-archived cases
+    # (even when rule.case_category or rule.trigger_event_type changed or rule was disabled)
+    existing_rule_deadlines = list(
+        session.exec(
+            select(Deadline).where(
+                Deadline.rule_code == rule.rule_code,
+                Deadline.is_manual_override == False,  # noqa: E712
+                Deadline.is_completed == False,  # noqa: E712
+            )
+        ).all()
+    )
+    ref_case_ids = {dl.case_id for dl in existing_rule_deadlines}
+    ref_event_ids = {
+        dl.source_event_id for dl in existing_rule_deadlines if dl.source_event_id is not None
+    }
+    ref_cases = (
+        {
+            c.id: c
+            for c in session.exec(select(Case).where(Case.id.in_(ref_case_ids))).all()  # type: ignore[union-attr]
+            if c.id is not None
+        }
+        if ref_case_ids
+        else {}
+    )
+    ref_events = (
+        {
+            ev.id: ev
+            for ev in session.exec(select(CaseEvent).where(CaseEvent.id.in_(ref_event_ids))).all()  # type: ignore[union-attr]
+            if ev.id is not None
+        }
+        if ref_event_ids
+        else {}
+    )
+    for dl in existing_rule_deadlines:
+        case_obj = ref_cases.get(dl.case_id)
+        if case_obj is None or case_obj.is_archived:
+            continue
+        ev_obj = ref_events.get(dl.source_event_id) if dl.source_event_id is not None else None
+        if (
+            not rule.is_enabled
+            or not rule_matches_case(rule, case_obj)
+            or (ev_obj is not None and ev_obj.event_type != rule.trigger_event_type)
+        ):
+            session.delete(dl)
+
+    if not rule.is_enabled:
+        session.flush()
+        return stats
+
     active_cases = list(
         session.exec(
             select(Case)
@@ -324,29 +379,6 @@ def recalculate_rule_deadlines(session: Session, rule: DeadlineRule) -> dict[str
             .order_by(Case.id)
         ).all()
     )
-    active_case_ids = {c.id for c in active_cases if c.id is not None}
-
-    # Prune obsolete open deadlines for this rule_code when disabled or on mismatched cases
-    existing_rule_deadlines = list(
-        session.exec(
-            select(Deadline).where(
-                Deadline.rule_code == rule.rule_code,
-                Deadline.is_manual_override == False,  # noqa: E712
-                Deadline.is_completed == False,  # noqa: E712
-            )
-        ).all()
-    )
-    case_map = {c.id: c for c in active_cases if c.id is not None}
-    for dl in existing_rule_deadlines:
-        if dl.case_id not in active_case_ids:
-            continue
-        case_obj = case_map[dl.case_id]
-        if not rule.is_enabled or not rule_matches_case(rule, case_obj):
-            session.delete(dl)
-
-    if not rule.is_enabled:
-        session.flush()
-        return stats
 
     for case in active_cases:
         if case.id is None or not rule_matches_case(rule, case):

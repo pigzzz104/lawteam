@@ -510,7 +510,12 @@ async def _probe_baiwang_api(
                 for key in ("pdfUrl", "ofdUrl", "xmlUrl", "downloadUrl", "url"):
                     sub_url = inner.get(key)
                     if isinstance(sub_url, str) and sub_url.startswith("http"):
-                        sub_resp = await client.get(sub_url)
+                        sub_resp = await safe_async_get(
+                            sub_url,
+                            headers={"User-Agent": _BROWSER_UA},
+                            timeout=25.0,
+                            require_portal_allowlist=False,
+                        )
                         artifact = _classify_http_response_artifact(sub_resp, sub_url)
                         if artifact:
                             return artifact
@@ -528,7 +533,12 @@ async def _probe_nuonuo_api(
     if "nnfp.jss.com.cn" not in host:
         return None
     try:
-        landing = await client.get(url)
+        landing = await safe_async_get(
+            url,
+            headers={"User-Agent": _BROWSER_UA},
+            timeout=25.0,
+            require_portal_allowlist=True,
+        )
         final_parsed = urlparse(str(landing.url))
         qs = parse_qs(final_parsed.query)
         payload: dict[str, str] = {}
@@ -551,7 +561,12 @@ async def _probe_nuonuo_api(
         for key in ("url", "pdfUrl", "ofdDownloadUrl", "xmlUrl"):
             sub_url = vo.get(key)
             if isinstance(sub_url, str) and sub_url.startswith("http"):
-                sub_resp = await client.get(sub_url)
+                sub_resp = await safe_async_get(
+                    sub_url,
+                    headers={"User-Agent": _BROWSER_UA},
+                    timeout=25.0,
+                    require_portal_allowlist=False,
+                )
                 artifact = _classify_http_response_artifact(sub_resp, sub_url)
                 if artifact:
                     return artifact

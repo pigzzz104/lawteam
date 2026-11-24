@@ -1,5 +1,5 @@
 import { Check, Minus } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 interface MdCheckboxProps {
   checked: boolean;
@@ -22,7 +22,14 @@ export function MdCheckbox({
   className = "",
   ariaLabel,
 }: MdCheckboxProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const active = checked || indeterminate;
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = Boolean(indeterminate);
+    }
+  }, [indeterminate]);
 
   return (
     <label
@@ -32,6 +39,7 @@ export function MdCheckbox({
     >
       <span className="relative mt-0.5 inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center">
         <input
+          ref={inputRef}
           type="checkbox"
           checked={checked}
           disabled={disabled}
@@ -41,7 +49,7 @@ export function MdCheckbox({
         />
         <span
           aria-hidden="true"
-          className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border-2 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--md-sys-color-primary)]/40 ${
+          className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border-2 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-primary/40 ${
             active
               ? "border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]"
               : "border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface-container-lowest)] text-transparent"

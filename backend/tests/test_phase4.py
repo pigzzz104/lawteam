@@ -173,6 +173,18 @@ def test_notify_target_modes_and_supervisor_escalation_and_idempotency(client: T
     assist_id = users["legal_assistant"]
     admin_id = users["partner_admin"]
 
+    with Session(engine) as session:
+        orig_user_channels: dict[int, tuple[str, str | None]] = {}
+        for uid in (lead_id, assist_id, admin_id):
+            u = session.get(User, uid)
+            assert u is not None
+            orig_user_channels[uid] = (u.notify_channel, u.notify_target)
+            u.notify_channel = "wecom"
+            if not u.wecom_userid:
+                u.wecom_userid = u.username
+            session.add(u)
+        session.commit()
+
     case_id = _create_team_case(
         client,
         lawyer_headers,
@@ -291,6 +303,14 @@ def test_notify_target_modes_and_supervisor_escalation_and_idempotency(client: T
     finally:
         _cleanup_deliveries_for_sources("deadline", dl_ids)
         _cleanup_case(case_id)
+        with Session(engine) as session:
+            for uid, (ch, tgt) in orig_user_channels.items():
+                u = session.get(User, uid)
+                if u is not None:
+                    u.notify_channel = ch
+                    u.notify_target = tgt
+                    session.add(u)
+            session.commit()
 
 
 def test_personal_custom_alerts_completed_skip_and_schedule_reminders(client: TestClient):

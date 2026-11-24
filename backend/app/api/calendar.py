@@ -21,6 +21,7 @@ from app.models.entities import (
     CaseCategory,
     CaseMember,
     CaseMemberRole,
+    CaseVisibility,
     Deadline,
     HolidayRollMode,
     InboxTriageItem,
@@ -43,6 +44,13 @@ router = APIRouter(prefix="/api", tags=["calendar"])
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=SHANGHAI_TZ)
+    return dt.astimezone(timezone.utc)
+
+
+def _db_to_utc(dt: datetime) -> datetime:
+    """Interpret naive DB datetimes as UTC rather than Asia/Shanghai."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
 
@@ -89,8 +97,9 @@ class DeadlineCreate(BaseModel):
     risk_level: RiskLevel = RiskLevel.HIGH
     override_reason: Optional[str] = None
     notify_target_type: NotifyTargetType = NotifyTargetType.CASE_TEAM
+    notify_owner_id: Optional[int] = None
     custom_notify_user_ids: list[int] = PydanticField(default_factory=list)
-    escalate_to_supervisor: bool = True
+    escalate_to_supervisor: Optional[bool] = None
     reminder_offsets_days: list[int] = PydanticField(default_factory=lambda: [7, 3, 1, 0])
     personal_custom_alerts: list[PersonalAlertItem] = PydanticField(default_factory=list)
 
@@ -331,7 +340,11 @@ def _load_calendar_data(
             dl_stmt = dl_stmt.where(Deadline.due_date <= end)
         for dl in session.exec(dl_stmt.order_by(Deadline.due_date, Deadline.id)).all():
             if scope == "my":
-                if dl.case_id not in target_case_ids and (user.id not in (dl.custom_notify_user_ids or [])):
+                in_custom = (
+                    dl.notify_target_type == NotifyTargetType.CUSTOM_USERS
+                    and user.id in (dl.custom_notify_user_ids or [])
+                )
+                if dl.case_id not in target_case_ids and not in_custom:
                     continue
             deadlines.append(dl)
 
@@ -355,11 +368,18 @@ def _load_calendar_data(
             if sched.case_id not in accessible_ids:
                 continue
             if scope == "my":
-                in_custom = user.id in (sched.custom_notify_user_ids or [])
+                in_custom = (
+                    sched.notify_target_type == NotifyTargetType.CUSTOM_USERS
+                    and user.id in (sched.custom_notify_user_ids or [])
+                )
                 if sched.owner_id != user.id and sched.case_id not in target_case_ids and not in_custom:
                     continue
         else:
-            if sched.owner_id != user.id and user.id not in (sched.custom_notify_user_ids or []):
+            in_custom = (
+                sched.notify_target_type == NotifyTargetType.CUSTOM_USERS
+                and user.id in (sched.custom_notify_user_ids or [])
+            )
+            if sched.owner_id != user.id and not in_custom:
                 continue
         schedules.append(sched)
 
@@ -591,10 +611,10 @@ def export_ics_feed(
     dtstamp_utc = datetime.now(timezone.utc)
 
     risk_labels = {
-        RiskLevel.CRITICAL: "致命死线",
-        RiskLevel.HIGH: "刚性程序",
-        RiskLevel.NORMAL: "常规节点",
-        RiskLevel.LOW: "待办",
+        RiskLevel.CRITICAL: "紧急",
+        RiskLevel.HIGH: "重要",
+        RiskLevel.NORMAL: "常规",
+        RiskLevel.LOW: "备忘",
     }
 
     for dl in deadlines:
@@ -716,6 +736,30 @@ def create_custom_deadline(
             )
         sanitized_alerts.append(dumped)
 
+    eff_notify_owner_id: Optional[int] = None
+    if payload.notify_target_type == NotifyTargetType.SELF:
+        candidate_uid = payload.notify_owner_id or current_user.id
+        if case.visibility == CaseVisibility.PRIVATE and candidate_uid != case.owner_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Private case deadline can only notify the case owner",
+            )
+        target_owner = session.get(User, candidate_uid)
+        if target_owner is None or not target_owner.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Notify owner user_id={candidate_uid} not found or inactive",
+            )
+        eff_notify_owner_id = candidate_uid
+
+    eff_escalate = (
+        payload.escalate_to_supervisor
+        if payload.escalate_to_supervisor is not None
+        else (payload.risk_level == RiskLevel.CRITICAL)
+    )
+    if case.visibility == CaseVisibility.PRIVATE:
+        eff_escalate = False
+
     dl = Deadline(
         case_id=case.id,
         source_event_id=None,
@@ -734,9 +778,13 @@ def create_custom_deadline(
         override_reason=payload.override_reason or "手动创建自定义期限",
         is_completed=False,
         notify_target_type=payload.notify_target_type,
-        notify_owner_id=current_user.id if payload.notify_target_type == NotifyTargetType.SELF else None,
-        custom_notify_user_ids=payload.custom_notify_user_ids,
-        escalate_to_supervisor=payload.escalate_to_supervisor,
+        notify_owner_id=eff_notify_owner_id,
+        custom_notify_user_ids=(
+            payload.custom_notify_user_ids
+            if payload.notify_target_type == NotifyTargetType.CUSTOM_USERS
+            else []
+        ),
+        escalate_to_supervisor=eff_escalate,
         reminder_offsets_days=payload.reminder_offsets_days,
         personal_custom_alerts=sanitized_alerts,
     )
@@ -788,8 +836,16 @@ def update_deadline(
         dl.notify_target_type = updates["notify_target_type"]
         if dl.notify_target_type == NotifyTargetType.SELF:
             dl.notify_owner_id = current_user.id
+        else:
+            dl.notify_owner_id = None
+        if dl.notify_target_type != NotifyTargetType.CUSTOM_USERS and "custom_notify_user_ids" not in updates:
+            dl.custom_notify_user_ids = []
     if "custom_notify_user_ids" in updates and updates["custom_notify_user_ids"] is not None:
-        dl.custom_notify_user_ids = updates["custom_notify_user_ids"]
+        dl.custom_notify_user_ids = (
+            updates["custom_notify_user_ids"]
+            if dl.notify_target_type == NotifyTargetType.CUSTOM_USERS
+            else []
+        )
     if "escalate_to_supervisor" in updates and updates["escalate_to_supervisor"] is not None:
         dl.escalate_to_supervisor = updates["escalate_to_supervisor"]
     if "reminder_offsets_days" in updates and updates["reminder_offsets_days"] is not None:
@@ -945,8 +1001,11 @@ def create_schedule(
         location=payload.location,
         risk_level=payload.risk_level,
         notify_target_type=payload.notify_target_type,
-        notify_owner_id=current_user.id if payload.notify_target_type == NotifyTargetType.SELF else None,
-        custom_notify_user_ids=payload.custom_notify_user_ids,
+        custom_notify_user_ids=(
+            payload.custom_notify_user_ids
+            if payload.notify_target_type == NotifyTargetType.CUSTOM_USERS
+            else []
+        ),
         reminder_offsets_minutes=payload.reminder_offsets_minutes,
         is_completed=False,
     )
@@ -995,11 +1054,11 @@ def update_schedule(
     if "start_time" in updates and updates["start_time"] is not None:
         sched.start_time = _to_utc(updates["start_time"])
     else:
-        sched.start_time = _to_utc(sched.start_time)
+        sched.start_time = _db_to_utc(sched.start_time)
     if "end_time" in updates and updates["end_time"] is not None:
         sched.end_time = _to_utc(updates["end_time"])
     else:
-        sched.end_time = _to_utc(sched.end_time)
+        sched.end_time = _db_to_utc(sched.end_time)
     if sched.end_time <= sched.start_time:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1011,8 +1070,17 @@ def update_schedule(
         sched.risk_level = updates["risk_level"]
     if "notify_target_type" in updates and updates["notify_target_type"] is not None:
         sched.notify_target_type = updates["notify_target_type"]
+        if (
+            sched.notify_target_type != NotifyTargetType.CUSTOM_USERS
+            and "custom_notify_user_ids" not in updates
+        ):
+            sched.custom_notify_user_ids = []
     if "custom_notify_user_ids" in updates and updates["custom_notify_user_ids"] is not None:
-        sched.custom_notify_user_ids = updates["custom_notify_user_ids"]
+        sched.custom_notify_user_ids = (
+            updates["custom_notify_user_ids"]
+            if sched.notify_target_type == NotifyTargetType.CUSTOM_USERS
+            else []
+        )
     if "reminder_offsets_minutes" in updates and updates["reminder_offsets_minutes"] is not None:
         sched.reminder_offsets_minutes = updates["reminder_offsets_minutes"]
     if "is_completed" in updates and updates["is_completed"] is not None:

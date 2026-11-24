@@ -176,9 +176,17 @@ def evaluate_and_apply_auto_triage(
             return triage
 
         inv_policy = _policy_requires_confirm(policies, "invoice_archive")
+        if match_res.case is not None and match_res.case.is_archived:
+            payload["triage_decision"] = "needs_confirm"
+            payload["triage_reason"] = (
+                f"匹配到已归档案件「{match_res.case.case_title}」，请人工确认是否重启归档"
+            )
+            triage.extracted_payload = payload
+            return triage
         if (
             match_res.confidence in ("exact_case_number", "unique_client", "unique_client_alias")
             and match_res.case is not None
+            and not match_res.case.is_archived
         ):
             if inv_policy is not None:
                 payload["triage_decision"] = "needs_confirm"
@@ -258,7 +266,21 @@ def evaluate_and_apply_auto_triage(
     auto_created_flag = False
     related_hint: Optional[dict[str, Any]] = None
 
-    if match_res.confidence == "exact_case_number" and match_res.case is not None:
+    if match_res.case is not None and match_res.case.is_archived:
+        payload["triage_decision"] = "needs_confirm"
+        case_no_label = parsed_case_no or match_res.case.case_number or ""
+        prefix = f"案号 {case_no_label} " if case_no_label else ""
+        payload["triage_reason"] = (
+            f"{prefix}匹配到已归档案件「{match_res.case.case_title}」，请确认是否重启归档"
+        )
+        triage.extracted_payload = payload
+        return triage
+
+    if (
+        match_res.confidence == "exact_case_number"
+        and match_res.case is not None
+        and not match_res.case.is_archived
+    ):
         target_case = match_res.case
     elif parsed_case_no:
         global_hits = find_global_cases_by_number(session, parsed_case_no)

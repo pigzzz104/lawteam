@@ -57,7 +57,7 @@ export function LoginPage() {
 
   return (
     <main className="min-h-dvh bg-gradient-to-br from-[#eef3fc] via-[#f7f9fc] to-[#e4ecfa] text-[var(--md-sys-color-on-surface)] flex items-center justify-center p-4 sm:p-8">
-      <div className="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/80 bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface)] shadow-[0_12px_36px_rgb(15_23_42/0.09)] overflow-hidden">
+      <div className="w-full max-w-md rounded-[28px] border border-border/80 bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface)] shadow-[0_12px_36px_rgb(15_23_42/0.09)] overflow-hidden">
         <div className="bg-[var(--md-sys-color-primary-container)] px-7 py-6 text-[var(--md-sys-color-on-primary-container)] flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm">
@@ -161,7 +161,7 @@ export function LoginPage() {
           </form>
 
           {healthQuery.data?.env === "development" && (
-            <details className="group border-t border-[var(--md-sys-color-outline-variant)]/75 pt-4">
+            <details className="group border-t border-border/75 pt-4">
               <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]">
                 <span>演示账号快速切换（默认密码 LawTeam@2026）</span>
                 <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />

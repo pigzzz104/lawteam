@@ -164,7 +164,7 @@ DEFAULT_AUTO_TRIAGE_POLICIES = [
     {
         "policy_key": "judgment_ruling_doc",
         "label": "裁判与裁决类文书（判决书/裁定书/仲裁裁决/复议决定）",
-        "description": "识别明确案号且命中期限规则时自动入案（无对应在办案时自动新建案件）并生成上诉/异议/撤裁死线。",
+        "description": "识别明确案号且命中期限规则时自动入案（无对应在办案时自动新建案件）并生成上诉/异议/撤裁法定期限。",
         "mode": "auto_archive",
         "sort_order": 2,
     },
@@ -184,7 +184,7 @@ DEFAULT_AUTO_TRIAGE_POLICIES = [
     },
     {
         "policy_key": "routine_doc",
-        "label": "常规无死线程序文书（缴费通知/签收回执等）",
+        "label": "常规无期限程序文书（缴费通知/签收回执等）",
         "description": "识别明确案号且已取回文书附件时，自动归档至案件「01_司法与程序文书」。",
         "mode": "auto_archive",
         "sort_order": 5,
@@ -213,11 +213,39 @@ def seed_auto_triage_policies(session: Session) -> int:
     return inserted
 
 
+def seed_initial_admin(session: Session) -> User | None:
+    """Create the first ADMIN account in non-dev environments when users table is empty."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    username = settings.initial_admin_username.strip()
+    password = settings.initial_admin_password.strip()
+    if not username or not password:
+        return None
+    existing_any = session.exec(select(User.id)).first()
+    if existing_any is not None:
+        return None
+    admin = User(
+        username=username,
+        full_name=settings.initial_admin_full_name.strip() or "系统管理员",
+        hashed_password=hash_password(password),
+        system_role=SystemRole.ADMIN,
+        calendar_color="#dc2626",
+        is_active=True,
+    )
+    session.add(admin)
+    session.commit()
+    session.refresh(admin)
+    return admin
+
+
 def bootstrap_database(session: Session) -> None:
     """Run all idempotent startup seeders."""
     from app.config import get_settings
 
     if get_settings().app_env.strip().lower() == "development":
         seed_demo_users(session)
+    else:
+        seed_initial_admin(session)
     seed_deadline_rules(session)
     seed_auto_triage_policies(session)

@@ -497,6 +497,18 @@ def update_case(
         ).all()
         for om in other_members:
             session.delete(om)
+        case_deadlines = session.exec(
+            select(Deadline).where(Deadline.case_id == case.id)
+        ).all()
+        for cdl in case_deadlines:
+            alerts = [
+                a
+                for a in (cdl.personal_custom_alerts or [])
+                if isinstance(a, dict) and a.get("user_id") == case.owner_id
+            ]
+            if alerts != (cdl.personal_custom_alerts or []):
+                cdl.personal_custom_alerts = alerts
+                session.add(cdl)
 
     if "current_stage" in updates and updates["current_stage"] != old_stage:
         case.stage_entered_at = utcnow()

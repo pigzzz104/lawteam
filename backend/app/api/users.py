@@ -14,6 +14,7 @@ from app.core.security import (
     record_audit_log,
     require_admin,
 )
+from app.core.url_safety import UnsafeUrlError, validate_webhook_url
 from app.database import get_session
 from app.models.entities import SystemRole, User
 
@@ -134,17 +135,24 @@ def create_user(
                 )
             fetch_mode = mode
 
+    clean_target = payload.notify_target.strip() or None if payload.notify_target else None
+    if ch == "webhook" and clean_target:
+        try:
+            validate_webhook_url(clean_target)
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     user = User(
         username=username,
         full_name=payload.full_name.strip(),
         hashed_password=hash_password(payload.password),
         system_role=payload.system_role,
-        wecom_userid=payload.wecom_userid.strip() if payload.wecom_userid else None,
+        wecom_userid=payload.wecom_userid.strip() or None if payload.wecom_userid else None,
         notify_channel=ch,
-        notify_target=payload.notify_target.strip() if payload.notify_target else None,
+        notify_target=clean_target,
         phone_os=payload.phone_os,
-        phone_last4=payload.phone_last4.strip()[:4] if payload.phone_last4 else None,
-        id_card_last4=payload.id_card_last4.strip()[:4] if payload.id_card_last4 else None,
+        phone_last4=payload.phone_last4.strip()[:4] or None if payload.phone_last4 else None,
+        id_card_last4=payload.id_card_last4.strip()[:4] or None if payload.id_card_last4 else None,
         court_auto_fetch_mode=fetch_mode,
         calendar_color=payload.calendar_color,
     )
@@ -175,32 +183,47 @@ def update_user(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if payload.full_name is not None:
-        user.full_name = payload.full_name.strip() or user.full_name
-    if payload.system_role is not None:
-        if user.id == admin_user.id and payload.system_role != SystemRole.ADMIN:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "full_name" in updates and updates["full_name"] is not None:
+        user.full_name = str(updates["full_name"]).strip() or user.full_name
+    if "system_role" in updates and updates["system_role"] is not None:
+        if user.id == admin_user.id and updates["system_role"] != SystemRole.ADMIN:
             raise HTTPException(status_code=400, detail="Cannot demote yourself from admin")
-        user.system_role = payload.system_role
-    if payload.wecom_userid is not None:
-        user.wecom_userid = payload.wecom_userid.strip() or None
-    if payload.notify_channel is not None:
+        user.system_role = updates["system_role"]
+    if "wecom_userid" in updates:
+        raw_wc = updates["wecom_userid"]
+        user.wecom_userid = str(raw_wc).strip() or None if raw_wc is not None else None
+    if "notify_channel" in updates and updates["notify_channel"] is not None:
         allowed_channels = ("wecom", "serverchan", "wxpusher", "pushplus", "webhook")
-        ch = payload.notify_channel.strip().lower()
+        ch = str(updates["notify_channel"]).strip().lower()
         if ch not in allowed_channels:
             raise HTTPException(status_code=400, detail=f"notify_channel must be one of {allowed_channels}")
         user.notify_channel = ch
-    if payload.notify_target is not None:
-        user.notify_target = payload.notify_target.strip() or None
-    if payload.phone_os is not None:
-        if payload.phone_os not in ("ios", "android"):
+    if "notify_target" in updates:
+        raw_tgt = updates["notify_target"]
+        user.notify_target = str(raw_tgt).strip() or None if raw_tgt is not None else None
+
+    eff_channel = (user.notify_channel or "wecom").strip().lower()
+    if eff_channel == "webhook" and user.notify_target:
+        try:
+            validate_webhook_url(user.notify_target)
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if "phone_os" in updates and updates["phone_os"] is not None:
+        if updates["phone_os"] not in ("ios", "android"):
             raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")
-        user.phone_os = payload.phone_os
-    if payload.phone_last4 is not None:
-        user.phone_last4 = payload.phone_last4.strip()[:4] or None
-    if payload.id_card_last4 is not None:
-        user.id_card_last4 = payload.id_card_last4.strip()[:4] or None
-    if payload.court_auto_fetch_mode is not None:
-        mode = payload.court_auto_fetch_mode.strip().lower()
+        user.phone_os = updates["phone_os"]
+    if "phone_last4" in updates:
+        raw_p4 = updates["phone_last4"]
+        user.phone_last4 = str(raw_p4).strip()[:4] or None if raw_p4 is not None else None
+    if "id_card_last4" in updates:
+        raw_id4 = updates["id_card_last4"]
+        user.id_card_last4 = str(raw_id4).strip()[:4] or None if raw_id4 is not None else None
+    if "court_auto_fetch_mode" in updates:
+        raw_mode = updates["court_auto_fetch_mode"]
+        mode = str(raw_mode).strip().lower() if raw_mode is not None else ""
         if not mode:
             user.court_auto_fetch_mode = None
         elif mode not in ALLOWED_COURT_AUTO_FETCH_MODES:
@@ -210,12 +233,12 @@ def update_user(
             )
         else:
             user.court_auto_fetch_mode = mode
-    if payload.calendar_color is not None:
-        user.calendar_color = payload.calendar_color
-    if payload.is_active is not None:
-        if user.id == admin_user.id and not payload.is_active:
+    if "calendar_color" in updates and updates["calendar_color"] is not None:
+        user.calendar_color = str(updates["calendar_color"]).strip() or user.calendar_color
+    if "is_active" in updates and updates["is_active"] is not None:
+        if user.id == admin_user.id and not updates["is_active"]:
             raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
-        user.is_active = payload.is_active
+        user.is_active = bool(updates["is_active"])
     if payload.new_password:
         user.hashed_password = hash_password(payload.new_password)
 

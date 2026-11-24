@@ -127,7 +127,7 @@ export function CaseList() {
         custody_place: caseCategory === "criminal" ? custodyPlace.trim() || null : null,
         crime_type: caseCategory === "criminal" ? crimeType || "一般犯罪" : null,
         charge_name: caseCategory === "criminal" ? chargeName.trim() || null : null,
-        members: selectedMembers,
+        members: visibility === "private" ? [] : selectedMembers,
       }),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ["cases"] });
@@ -221,7 +221,7 @@ export function CaseList() {
       </search>
 
       {casesQuery.isLoading ? (
-        <div className="lt-card p-12 text-center text-sm text-slate-600">
+        <div className="lt-card p-12 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
           正在加载案件列表...
         </div>
       ) : casesQuery.isError ? (
@@ -254,30 +254,30 @@ export function CaseList() {
             <Link
               key={c.id}
               to={`/cases/${c.id}`}
-              className="group lt-card flex flex-col justify-between p-5 hover:border-blue-500 hover:shadow-md transition-all"
+              className="group lt-card flex flex-col justify-between p-5 hover:border-[var(--md-sys-color-primary)] hover:shadow-md transition-all"
             >
               <div className="space-y-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <CategoryBadge category={c.case_category} />
-                    <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-700">
+                    <span className="rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
                       {c.procedure_subtype}
                     </span>
                     {c.visibility === "private" && (
-                      <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
                         <Lock className="h-3 w-3" aria-hidden="true" />
                         私密
                       </span>
                     )}
                     {c.is_archived && (
-                      <span className="inline-flex items-center gap-1 rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
                         <Archive className="h-3 w-3" aria-hidden="true" />
                         已归档
                       </span>
                     )}
                   </div>
                   {c.stale_warning && (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-900 shrink-0 tabular-nums">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-[#f6d48b] bg-[#fef1d6] px-2.5 py-0.5 text-xs font-semibold text-[#7a4b00] shrink-0 tabular-nums">
                       <AlertTriangle className="h-3 w-3" aria-hidden="true" />
                       停滞 {c.stage_days_elapsed} 天
                     </span>
@@ -285,32 +285,32 @@ export function CaseList() {
                 </div>
 
                 <div>
-                  <h2 className="text-base font-bold text-slate-900 group-hover:text-blue-700 line-clamp-2">
+                  <h2 className="text-base font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)] line-clamp-2">
                     {c.case_title}
                   </h2>
-                  <p className="mt-0.5 text-xs font-mono text-slate-600 tabular-nums">
+                  <p className="mt-0.5 text-xs font-mono text-[var(--md-sys-color-on-surface-variant)] tabular-nums">
                     {c.case_number || "未填写案号"}
                   </p>
                 </div>
 
-                <div className="space-y-1 text-xs text-slate-700">
+                <div className="space-y-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
                   <p>
-                    <span className="text-slate-600">委托人：</span>
-                    <span className="font-semibold text-slate-900">{c.client_name}</span>
+                    <span className="text-[var(--md-sys-color-on-surface-variant)]">委托人：</span>
+                    <span className="font-semibold text-[var(--md-sys-color-on-surface)]">{c.client_name}</span>
                     {c.opponent_name ? (
-                      <span className="text-slate-600"> vs {c.opponent_name}</span>
+                      <span className="text-[var(--md-sys-color-on-surface-variant)]"> vs {c.opponent_name}</span>
                     ) : null}
                   </p>
                   {c.handling_agency && (
                     <p className="truncate">
-                      <span className="text-slate-600">办案机构：</span>
+                      <span className="text-[var(--md-sys-color-on-surface-variant)]">办案机构：</span>
                       {c.handling_agency}
                     </p>
                   )}
                 </div>
 
                 <div className="flex flex-wrap gap-1.5">
-                  <span className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-800 tabular-nums">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-primary-container)] tabular-nums">
                     <Clock className="h-3 w-3" aria-hidden="true" />
                     {c.current_stage}（{c.stage_days_elapsed}天）
                   </span>
@@ -318,21 +318,21 @@ export function CaseList() {
                 </div>
               </div>
 
-              <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
-                <div className="flex items-center gap-1.5 text-slate-600">
-                  <Users className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+              <div className="mt-4 flex items-center justify-between border-t border-border/60 pt-3 text-xs">
+                <div className="flex items-center gap-1.5 text-[var(--md-sys-color-on-surface-variant)]">
+                  <Users className="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" aria-hidden="true" />
                   <span className="truncate max-w-[160px]">
                     {c.members.map((m) => m.full_name).join("、") || "仅本人"}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 tabular-nums">
                   {c.open_deadlines_count > 0 ? (
-                    <span className="rounded-md bg-rose-50 px-2 py-0.5 font-semibold text-rose-800 border border-rose-200">
+                    <span className="rounded-full bg-[#fde7e5] px-2.5 py-0.5 font-semibold text-[#8c1d18] border border-[#f4b8b3]">
                       {c.open_deadlines_count} 项未办结
                       {c.next_deadline_date ? ` · ${c.next_deadline_date}` : ""}
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 text-slate-600">
+                    <span className="inline-flex items-center gap-1 text-[var(--md-sys-color-on-surface-variant)]">
                       <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
                       无未办结期限
                     </span>
@@ -505,7 +505,12 @@ export function CaseList() {
             <span className="block text-xs font-semibold">可见性权限</span>
             <MdRadioGroup<CaseVisibility>
               value={visibility}
-              onChange={setVisibility}
+              onChange={(nextVis) => {
+                setVisibility(nextVis);
+                if (nextVis === "private") {
+                  setSelectedMembers([]);
+                }
+              }}
               columns={2}
               ariaLabel="案件可见性"
               options={[
@@ -516,7 +521,7 @@ export function CaseList() {
           </div>
 
           {caseCategory === "criminal" && (
-            <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-error)]/25 bg-[var(--md-sys-color-error-container)]/35 p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-[var(--md-sys-shape-corner-md)] border border-error/25 bg-error-container/35 p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label htmlFor="nc-crime-type" className="block text-xs font-semibold mb-1">
                   案件情形（拘留计算适用）
@@ -594,7 +599,7 @@ export function CaseList() {
             </button>
 
             {createMoreOpen && (
-              <div className="space-y-3 border-t border-[var(--md-sys-color-outline-variant)]/60 p-3.5">
+              <div className="space-y-3 border-t border-border/60 p-3.5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="nc-opponent" className="block text-xs font-semibold mb-1">
@@ -632,7 +637,7 @@ export function CaseList() {
 
                 {visibility === "team" &&
                   (usersQuery.data ?? []).filter((u) => u.is_active).length > 0 && (
-                    <div className="space-y-2 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-3">
+                    <div className="space-y-2 border-t border-border/55 pt-3">
                       <p className="text-xs font-semibold">
                         分配团队成员（默认将您设为办案组长）
                       </p>
@@ -645,7 +650,7 @@ export function CaseList() {
                             return (
                               <div
                                 key={u.id}
-                                className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-[var(--md-sys-color-outline-variant)]/40 last:border-b-0"
+                                className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-border/40 last:border-b-0"
                               >
                                 <span className="font-medium">
                                   {u.full_name}

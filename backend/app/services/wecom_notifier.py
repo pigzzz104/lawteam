@@ -218,6 +218,18 @@ def _send_personal_channel(
 ) -> ChannelAttempt:
     assert user.id is not None
     masked = target[:4] + "***" + target[-4:] if len(target) > 10 else target
+    if channel == "webhook":
+        try:
+            target = validate_webhook_url(target, settings=settings)
+        except UnsafeUrlError as exc:
+            return ChannelAttempt(
+                channel=channel,
+                recipient_user_ids=[user.id],
+                target_summary=masked,
+                ok=False,
+                dry_run=bool(settings.wecom_dry_run),
+                error=str(exc),
+            )
     if settings.wecom_dry_run:
         return ChannelAttempt(
             channel=channel,

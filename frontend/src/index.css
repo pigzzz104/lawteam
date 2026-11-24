@@ -8,35 +8,60 @@
 
     /* Material Design 3 Color Roles (Legal Cobalt / Slate Tonal System) */
     --md-sys-color-primary: #1b56b3;
+    --md-sys-color-primary-rgb: 27 86 179;
     --md-sys-color-on-primary: #ffffff;
+    --md-sys-color-on-primary-rgb: 255 255 255;
     --md-sys-color-primary-container: #d8e2ff;
+    --md-sys-color-primary-container-rgb: 216 226 255;
     --md-sys-color-on-primary-container: #001a41;
+    --md-sys-color-on-primary-container-rgb: 0 26 65;
 
     --md-sys-color-secondary: #535e78;
+    --md-sys-color-secondary-rgb: 83 94 120;
     --md-sys-color-on-secondary: #ffffff;
+    --md-sys-color-on-secondary-rgb: 255 255 255;
     --md-sys-color-secondary-container: #d7e2f8;
+    --md-sys-color-secondary-container-rgb: 215 226 248;
     --md-sys-color-on-secondary-container: #0f1b33;
+    --md-sys-color-on-secondary-container-rgb: 15 27 51;
 
     --md-sys-color-tertiary: #0b6b5c;
+    --md-sys-color-tertiary-rgb: 11 107 92;
     --md-sys-color-tertiary-container: #cceae3;
+    --md-sys-color-tertiary-container-rgb: 204 234 227;
     --md-sys-color-on-tertiary-container: #00201b;
+    --md-sys-color-on-tertiary-container-rgb: 0 32 27;
 
     --md-sys-color-error: #b3261e;
+    --md-sys-color-error-rgb: 179 38 30;
     --md-sys-color-on-error: #ffffff;
+    --md-sys-color-on-error-rgb: 255 255 255;
     --md-sys-color-error-container: #fde7e5;
+    --md-sys-color-error-container-rgb: 253 231 229;
     --md-sys-color-on-error-container: #410e0b;
+    --md-sys-color-on-error-container-rgb: 65 14 11;
 
     --md-sys-color-surface: #f7f9fc;
+    --md-sys-color-surface-rgb: 247 249 252;
     --md-sys-color-surface-container-lowest: #ffffff;
+    --md-sys-color-surface-container-lowest-rgb: 255 255 255;
     --md-sys-color-surface-container-low: #eff3f9;
+    --md-sys-color-surface-container-low-rgb: 239 243 249;
     --md-sys-color-surface-container: #e8edf5;
+    --md-sys-color-surface-container-rgb: 232 237 245;
     --md-sys-color-surface-container-high: #e1e7f0;
+    --md-sys-color-surface-container-high-rgb: 225 231 240;
     --md-sys-color-surface-container-highest: #dbe1eb;
+    --md-sys-color-surface-container-highest-rgb: 219 225 235;
 
     --md-sys-color-on-surface: #181c23;
+    --md-sys-color-on-surface-rgb: 24 28 35;
     --md-sys-color-on-surface-variant: #434955;
+    --md-sys-color-on-surface-variant-rgb: 67 73 85;
     --md-sys-color-outline: #6c7484;
+    --md-sys-color-outline-rgb: 108 116 132;
     --md-sys-color-outline-variant: #cdd5e2;
+    --md-sys-color-outline-variant-rgb: 205 213 226;
     --md-sys-color-scrim: rgb(15 23 42 / 0.44);
 
     /* Material Design 3 Shape Scale */

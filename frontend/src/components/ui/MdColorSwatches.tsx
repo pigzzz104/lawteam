@@ -54,7 +54,7 @@ export function MdColorSwatches({
             style={{ backgroundColor: swatch.hex, color: getContrastInk(swatch.hex) }}
             className={`inline-flex h-8 w-8 items-center justify-center rounded-full border-2 transition-transform hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] ${
               selected
-                ? "border-[var(--md-sys-color-on-surface)] ring-2 ring-[var(--md-sys-color-primary)]/35 scale-105"
+                ? "border-[var(--md-sys-color-on-surface)] ring-2 ring-primary/35 scale-105"
                 : "border-white/80 shadow-sm"
             }`}
           >

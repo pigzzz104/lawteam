@@ -113,6 +113,7 @@ export function InboxTriage() {
     queryIdParam ? Number(queryIdParam) : null
   );
   const detailPanelRef = useRef<HTMLDivElement>(null);
+  const lastSyncedIdRef = useRef<string | null>(null);
 
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -198,11 +199,17 @@ export function InboxTriage() {
 
   const allItems = inboxQuery.data ?? [];
 
-  // Deep-link sync `/inbox?id=123` even when already mounted
+  // Deep-link sync `/inbox?id=123` only once per URL param change (so 30s refetches never snap viewTab back)
   useEffect(() => {
-    if (!queryIdParam) return;
+    if (!queryIdParam) {
+      lastSyncedIdRef.current = null;
+      return;
+    }
+    if (lastSyncedIdRef.current === queryIdParam) return;
+    if (allItems.length === 0) return;
     const idNum = Number(queryIdParam);
     if (!Number.isFinite(idNum)) return;
+    lastSyncedIdRef.current = queryIdParam;
     setSelectedId(idNum);
     const match = allItems.find((it) => it.id === idNum);
     if (match) {
@@ -337,6 +344,9 @@ export function InboxTriage() {
   const refreshInbox = () => {
     queryClient.invalidateQueries({ queryKey: ["inbox"] });
     queryClient.invalidateQueries({ queryKey: ["cases"] });
+    queryClient.invalidateQueries({ queryKey: ["case-detail"] });
+    queryClient.invalidateQueries({ queryKey: ["case-schedules"] });
+    queryClient.invalidateQueries({ queryKey: ["case-audit-logs"] });
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
   };
 
@@ -624,7 +634,13 @@ export function InboxTriage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <MdSegmentedButton<InboxViewTab>
           value={viewTab}
-          onChange={setViewTab}
+          onChange={(nextTab) => {
+            setViewTab(nextTab);
+            if (queryIdParam) {
+              lastSyncedIdRef.current = null;
+              setSearchParams({}, { replace: true });
+            }
+          }}
           ariaLabel="收件箱状态筛选"
           options={[
             { value: "needs_action", label: "待处理", count: counts.needsAction },
@@ -719,8 +735,8 @@ export function InboxTriage() {
                   }}
                   className={`w-full text-left rounded-[var(--md-sys-shape-corner-lg)] border p-4 transition-all space-y-2 ${
                     active
-                      ? "border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/35 shadow-sm ring-1 ring-[var(--md-sys-color-primary)]"
-                      : "border-[var(--md-sys-color-outline-variant)]/80 bg-[var(--md-sys-color-surface-container-lowest)] hover:bg-[var(--md-sys-color-surface-container-low)]"
+                      ? "border-[var(--md-sys-color-primary)] bg-primary-container/35 shadow-sm ring-1 ring-[var(--md-sys-color-primary)]"
+                      : "border-border/80 bg-[var(--md-sys-color-surface-container-lowest)] hover:bg-[var(--md-sys-color-surface-container-low)]"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -773,7 +789,7 @@ export function InboxTriage() {
           {/* Right Detail & Confirm */}
           {selectedItem && (
             <div ref={detailPanelRef} className="lg:col-span-7 lt-card p-6 space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)]/60 pb-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <TriageStatusBadge status={selectedItem.status} />
@@ -822,7 +838,7 @@ export function InboxTriage() {
                 )}
 
               {relatedCaseHint && (
-                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-primary-container)]/40 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]">
+                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-primary/30 bg-primary-container/40 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]">
                   {relatedCaseHint}
                 </div>
               )}
@@ -839,7 +855,7 @@ export function InboxTriage() {
               )}
 
               {selectedItem.error_or_manual_reason && (
-                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-error)]/30 bg-[var(--md-sys-color-error-container)]/60 p-3.5 space-y-3">
+                <div className="rounded-[var(--md-sys-shape-corner-md)] border border-error/30 bg-error-container/60 p-3.5 space-y-3">
                   <div className="flex items-start gap-2 text-xs text-[var(--md-sys-color-on-error-container)]">
                     <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
                     <div>
@@ -996,7 +1012,7 @@ export function InboxTriage() {
                     e.preventDefault();
                     confirmMut.mutate();
                   }}
-                  className="space-y-4 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-4"
+                  className="space-y-4 border-t border-border/60 pt-4"
                 >
                   <MdSegmentedButton<"existing" | "new">
                     value={caseMode}
@@ -1218,7 +1234,7 @@ export function InboxTriage() {
                     </button>
 
                     {advancedOpen && (
-                      <div className="space-y-3 border-t border-[var(--md-sys-color-outline-variant)]/60 p-3.5">
+                      <div className="space-y-3 border-t border-border/60 p-3.5">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <label htmlFor="cf-folder" className="block text-xs font-semibold mb-1">
@@ -1248,6 +1264,9 @@ export function InboxTriage() {
                               className="text-xs py-1.5"
                             >
                               <option value="">不手动指定（由程序自动判断）</option>
+                              {newStage && !stageSuggestions.includes(newStage) && (
+                                <option value={newStage}>{newStage}</option>
+                              )}
                               {stageSuggestions.map((sg) => (
                                 <option key={sg} value={sg}>
                                   {sg}
@@ -1272,6 +1291,9 @@ export function InboxTriage() {
                               className="text-xs py-1.5"
                             >
                               <option value="">仅归档文件，不创建程序事件</option>
+                              {eventType && !filteredEventPresets.some((p) => p.value === eventType) && (
+                                <option value={eventType}>{getEventTypeLabel(eventType)}</option>
+                              )}
                               {filteredEventPresets.map((p) => (
                                 <option key={p.value} value={p.value}>
                                   {p.label}
@@ -1425,7 +1447,7 @@ export function InboxTriage() {
               正在加载规则开关...
             </p>
           ) : (
-            <div className="divide-y divide-[var(--md-sys-color-outline-variant)]/60">
+            <div className="divide-y divide-border/60">
               {(policiesQuery.data ?? []).map((policy: AutoTriagePolicy) => {
                 const isAuto = policy.mode === "auto_archive";
                 return (

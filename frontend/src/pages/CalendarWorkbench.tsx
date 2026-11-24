@@ -37,6 +37,8 @@ import {
   CASE_CATEGORY_META,
   HOLIDAY_ROLL_LABELS,
   NOTIFY_TARGET_LABELS,
+  RISK_LEVEL_DEADLINE_PRESETS,
+  RISK_LEVEL_OPTIONS,
   SCHEDULE_CATEGORY_LABELS,
   copyTextSafely,
   formatShanghaiDateTime,
@@ -109,7 +111,9 @@ export function CalendarWorkbench() {
   const [newEndDt, setNewEndDt] = useState(`${todayShanghaiIso()}T11:00`);
   const [newLocation, setNewLocation] = useState("");
   const [newDueDate, setNewDueDate] = useState(todayShanghaiIso());
-  const [newRiskLevel, setNewRiskLevel] = useState<RiskLevel>("high");
+  const [newRiskLevel, setNewRiskLevel] = useState<RiskLevel>("normal");
+  const [newDlOffsets, setNewDlOffsets] = useState<number[]>(RISK_LEVEL_DEADLINE_PRESETS.high.offsets);
+  const [newDlEscalate, setNewDlEscalate] = useState<boolean>(RISK_LEVEL_DEADLINE_PRESETS.high.escalate);
   const [newLegalBasis, setNewLegalBasis] = useState("");
   const [newApplyRoll, setNewApplyRoll] = useState(true);
 
@@ -211,6 +215,9 @@ export function CalendarWorkbench() {
   const invalidateAllCalendar = () => {
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
     queryClient.invalidateQueries({ queryKey: ["case-detail-for-cal"] });
+    queryClient.invalidateQueries({ queryKey: ["case-detail"] });
+    queryClient.invalidateQueries({ queryKey: ["case-schedules"] });
+    queryClient.invalidateQueries({ queryKey: ["case-audit-logs"] });
     queryClient.invalidateQueries({ queryKey: ["cases"] });
     queryClient.invalidateQueries({ queryKey: ["inbox"] });
   };
@@ -237,7 +244,7 @@ export function CalendarWorkbench() {
           : extractedEventType
             ? ev.start.slice(0, 10)
             : null;
-      const hasHearing = Boolean(p.hearing_time) || !ev.all_day;
+      const hasHearing = !ev.all_day && ev.end > ev.start;
 
       return inboxApi.confirm(ev.record_id, {
         case_id: ev.case_id,
@@ -306,6 +313,7 @@ export function CalendarWorkbench() {
         setSelectedEvent({
           ...selectedEvent,
           is_completed: updated.is_completed,
+          risk_level: updated.risk_level,
           due_date: updated.due_date,
           raw_due_date: updated.raw_due_date,
           roll_reason: updated.roll_reason,
@@ -398,6 +406,7 @@ export function CalendarWorkbench() {
       if (!newCaseId) {
         throw new Error("创建自定义期限必须关联一个案件");
       }
+      const selectedCaseObj = (casesQuery.data ?? []).find((c) => String(c.id) === newCaseId);
       return calendarApi.createDeadline({
         case_id: Number(newCaseId),
         title: newTitle.trim(),
@@ -405,6 +414,8 @@ export function CalendarWorkbench() {
         legal_basis: newLegalBasis.trim() || null,
         apply_holiday_roll: newApplyRoll,
         risk_level: newRiskLevel,
+        reminder_offsets_days: newDlOffsets,
+        escalate_to_supervisor: selectedCaseObj?.visibility === "private" ? false : newDlEscalate,
       });
     },
     onSuccess: () => {
@@ -463,7 +474,9 @@ export function CalendarWorkbench() {
     setNewEndDt(`${todayShanghaiIso()}T11:00`);
     setNewLocation("");
     setNewDueDate(todayShanghaiIso());
-    setNewRiskLevel("high");
+    setNewRiskLevel("normal");
+    setNewDlOffsets(RISK_LEVEL_DEADLINE_PRESETS.high.offsets);
+    setNewDlEscalate(RISK_LEVEL_DEADLINE_PRESETS.high.escalate);
     setNewLegalBasis("");
     setNewApplyRoll(true);
     setCreateError(null);
@@ -602,7 +615,7 @@ export function CalendarWorkbench() {
         </div>
 
         {ownerPills.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-2.5">
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border/55 pt-2.5">
             <span className="text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)] mr-1">
               成员筛选：
             </span>
@@ -669,7 +682,7 @@ export function CalendarWorkbench() {
             ref={detailAsideRef}
             className="xl:col-span-4 lt-card p-5 space-y-4 xl:sticky xl:top-6"
           >
-            <div className="flex items-start justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/60 pb-3">
+            <div className="flex items-start justify-between gap-2 border-b border-border/60 pb-3">
               <div className="space-y-1">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <RiskBadge risk={selectedEvent.risk_level} />
@@ -745,7 +758,7 @@ export function CalendarWorkbench() {
                 </div>
               )}
               {selectedEvent.legal_basis && (
-                <div className="rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-primary-container)]/40 p-2.5 text-[var(--md-sys-color-on-primary-container)]">
+                <div className="rounded-[var(--md-sys-shape-corner-md)] bg-primary-container/40 p-2.5 text-[var(--md-sys-color-on-primary-container)]">
                   <span className="font-semibold">法律依据：</span>
                   {selectedEvent.legal_basis}
                 </div>
@@ -806,7 +819,7 @@ export function CalendarWorkbench() {
             )}
 
             {selectedEvent.source_type === "deadline" && (
-              <div className="space-y-4 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-3">
+              <div className="space-y-4 border-t border-border/60 pt-3">
                 <button
                   type="button"
                   disabled={updateDeadlineMut.isPending}
@@ -941,17 +954,35 @@ export function CalendarWorkbench() {
                       )}
                   </div>
 
-                  <MdCheckbox
-                    checked={activeDeadline?.escalate_to_supervisor ?? escalateSupervisor}
-                    onChange={(checked) => {
-                      setEscalateSupervisor(checked);
-                      updateDeadlineMut.mutate({
-                        deadlineId: selectedEvent.record_id,
-                        payload: { escalate_to_supervisor: checked },
-                      });
-                    }}
-                    label={<span className="text-xs">临期 1 天未办结抄送督办合伙人</span>}
-                  />
+                  <div className="space-y-1">
+                    <span className="block text-[11px]">重要程度</span>
+                    <MdSegmentedButton<RiskLevel>
+                      value={activeDeadline?.risk_level ?? selectedEvent.risk_level}
+                      onChange={(nextRisk) => {
+                        updateDeadlineMut.mutate({
+                          deadlineId: selectedEvent.record_id,
+                          payload: { risk_level: nextRisk },
+                        });
+                      }}
+                      fullWidth
+                      ariaLabel="调整期限重要程度"
+                      options={RISK_LEVEL_OPTIONS}
+                    />
+                  </div>
+
+                  {deadlineDetailQuery.data?.case.visibility !== "private" && (
+                    <MdCheckbox
+                      checked={activeDeadline?.escalate_to_supervisor ?? escalateSupervisor}
+                      onChange={(checked) => {
+                        setEscalateSupervisor(checked);
+                        updateDeadlineMut.mutate({
+                          deadlineId: selectedEvent.record_id,
+                          payload: { escalate_to_supervisor: checked },
+                        });
+                      }}
+                      label={<span className="text-xs">临期 1 天未办结抄送督办合伙人</span>}
+                    />
+                  )}
 
                   <form
                     onSubmit={(e) => {
@@ -962,7 +993,7 @@ export function CalendarWorkbench() {
                         fireAt: toShanghaiIsoWithOffset(personalAlertAt),
                       });
                     }}
-                    className="space-y-2 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-2.5"
+                    className="space-y-2 border-t border-border/55 pt-2.5"
                   >
                     <label htmlFor="personal-alert-dt" className="block text-[11px]">
                       个人定点提醒时间（北京时间）
@@ -1020,7 +1051,7 @@ export function CalendarWorkbench() {
             )}
 
             {selectedEvent.source_type === "schedule" && (
-              <div className="flex flex-col gap-2 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-3">
+              <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
                 <button
                   type="button"
                   disabled={updateScheduleMut.isPending}
@@ -1150,8 +1181,15 @@ export function CalendarWorkbench() {
             value={createKind}
             onChange={(next) => {
               setCreateKind(next);
-              if (next === "deadline" && !newCaseId && casesQuery.data?.[0]) {
-                setNewCaseId(String(casesQuery.data[0].id));
+              if (next === "deadline") {
+                setNewRiskLevel("high");
+                setNewDlOffsets(RISK_LEVEL_DEADLINE_PRESETS.high.offsets);
+                setNewDlEscalate(RISK_LEVEL_DEADLINE_PRESETS.high.escalate);
+                if (!newCaseId && casesQuery.data?.[0]) {
+                  setNewCaseId(String(casesQuery.data[0].id));
+                }
+              } else {
+                setNewRiskLevel("normal");
               }
             }}
             ariaLabel="新建事项类型"
@@ -1186,19 +1224,21 @@ export function CalendarWorkbench() {
             </div>
 
             <div>
-              <label htmlFor="cal-create-risk" className="block text-xs font-semibold mb-1">
-                风险等级
-              </label>
-              <MdSelect
-                id="cal-create-risk"
+              <span className="block text-xs font-semibold mb-1">重要程度</span>
+              <MdSegmentedButton<RiskLevel>
                 value={newRiskLevel}
-                onChange={(e) => setNewRiskLevel(e.target.value as RiskLevel)}
-              >
-                <option value="critical">致命死线</option>
-                <option value="high">刚性程序</option>
-                <option value="normal">常规节点</option>
-                <option value="low">内部待办</option>
-              </MdSelect>
+                onChange={(nextRisk) => {
+                  setNewRiskLevel(nextRisk);
+                  if (createKind === "deadline") {
+                    const preset = RISK_LEVEL_DEADLINE_PRESETS[nextRisk];
+                    setNewDlOffsets(preset.offsets);
+                    setNewDlEscalate(preset.escalate);
+                  }
+                }}
+                fullWidth
+                ariaLabel="重要程度"
+                options={RISK_LEVEL_OPTIONS}
+              />
             </div>
           </div>
 
@@ -1313,11 +1353,44 @@ export function CalendarWorkbench() {
                   />
                 </div>
               </div>
-              <MdCheckbox
-                checked={newApplyRoll}
-                onChange={setNewApplyRoll}
-                label="如遇国家法定节假日或周末，自动顺延至首个工作日"
-              />
+              <div className="space-y-1.5">
+                <span className="block text-xs font-semibold">提前提醒节点</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[7, 3, 1, 0].map((day) => {
+                    const selected = newDlOffsets.includes(day);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => {
+                          const next = selected
+                            ? newDlOffsets.filter((d) => d !== day)
+                            : [...newDlOffsets, day].sort((a, b) => b - a);
+                          setNewDlOffsets(next);
+                        }}
+                        className={`lt-chip py-1 text-xs ${selected ? "lt-chip-active" : ""}`}
+                      >
+                        {day === 0 ? "到期当天" : `提前 ${day} 天`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2.5 pt-0.5">
+                <MdCheckbox
+                  checked={newApplyRoll}
+                  onChange={setNewApplyRoll}
+                  label="如遇国家法定节假日或周末，自动顺延至首个工作日"
+                />
+                {(casesQuery.data ?? []).find((c) => String(c.id) === newCaseId)?.visibility !== "private" && (
+                  <MdCheckbox
+                    checked={newDlEscalate}
+                    onChange={setNewDlEscalate}
+                    label="临期 1 天未办结抄送督办合伙人"
+                  />
+                )}
+              </div>
             </div>
           )}
 

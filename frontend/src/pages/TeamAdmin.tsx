@@ -221,11 +221,11 @@ export function TeamAdmin() {
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--md-sys-color-outline-variant)]/50">
+              <tbody className="divide-y divide-border/50">
                 {usersQuery.data!.map((u) => (
                   <tr
                     key={u.id}
-                    className="hover:bg-[var(--md-sys-color-surface-container-low)]/50"
+                    className="hover:bg-surface-low/50"
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
@@ -488,7 +488,7 @@ export function TeamAdmin() {
           </div>
 
           {editingUser && (
-            <div className="pt-1 border-t border-[var(--md-sys-color-outline-variant)]/55">
+            <div className="pt-1 border-t border-border/55">
               <MdSwitch
                 checked={isActive}
                 disabled={Boolean(user && editingUser.id === user.id)}

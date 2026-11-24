@@ -27,16 +27,21 @@ import {
   MdCheckbox,
   MdFileDropzone,
   MdRadioGroup,
+  MdSegmentedButton,
   MdSelect,
 } from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
 import {
+  CASE_CATEGORY_META,
   CASE_MEMBER_ROLE_LABELS,
   CRIME_TYPE_OPTIONS,
   CUSTODY_STATUS_OPTIONS,
   EVENT_TYPE_PRESETS,
   HOLIDAY_ROLL_LABELS,
   NOTIFY_TARGET_LABELS,
+  RISK_LEVEL_DEADLINE_PRESETS,
+  RISK_LEVEL_META,
+  RISK_LEVEL_OPTIONS,
   SCHEDULE_CATEGORY_LABELS,
   SERVICE_METHOD_OPTIONS,
   STANDARD_CASE_SUBFOLDERS,
@@ -60,47 +65,158 @@ type TabKey = "events" | "deadlines" | "schedules" | "files" | "members" | "audi
 const AUDIT_FIELD_LABELS: Record<string, string> = {
   case_title: "案件名称",
   case_number: "案号",
-  current_stage: "阶段",
+  old_stage: "原阶段",
+  new_stage: "新阶段",
+  current_stage: "当前阶段",
   procedure_subtype: "程序子类型",
   is_archived: "是否归档",
   visibility: "可见性",
+  case_category: "案件类型",
   client_name: "委托人",
+  client_id_last4: "证件后4位",
   opponent_name: "对方当事人",
   handling_agency: "承办机关",
   custody_status: "羁押状态",
   custody_place: "看守所",
   crime_type: "案件情形",
-  charge_name: "罪名",
+  charge_name: "涉嫌罪名",
   is_foreign_related: "是否涉外",
-  event_type: "事件",
+  folder_rel_path: "归档路径",
+  event_type: "事件类型",
   event_date: "事件日期",
+  service_method: "送达方式",
+  authority_specified_days: "指定天数",
+  derived_deadlines: "派生期限数",
   due_date: "到期日",
+  old_due_date: "原到期日",
+  new_due_date: "调整后到期日",
   override_reason: "修改原因",
+  title: "事项标题",
+  legal_basis: "法律依据",
+  risk_level: "重要程度",
+  escalate_to_supervisor: "临期抄送督办",
+  notify_target_type: "通知范围",
+  reminder_offsets_days: "提前提醒天数",
+  category: "日程类型",
+  start_time: "开始时间",
+  end_time: "结束时间",
+  location: "地点",
   file_name: "文件名",
-  folder_category: "目录",
+  subfolder: "归档目录",
+  folder_category: "归档目录",
+  rel_file_path: "文件相对路径",
+  doc_subtype: "文书子类型",
+  members: "办案成员",
   members_count: "成员数",
+  user_id: "成员",
+  role: "角色",
+  role_in_case: "角色",
+  updates: "变更项",
+  reason: "原因",
+  status: "状态",
+  is_completed: "是否办结",
+  auto_archived: "是否自动归档",
+  restored_files: "恢复文件",
+  deleted_empty_auto_case: "清理空自建案",
+  item_type: "分拣类型",
+  source: "来源",
+  notes: "备注",
 };
 
-function formatAuditValue(key: string, val: unknown): string {
+const AUDIT_VALUE_ENUMS: Record<string, Record<string, string>> = {
+  visibility: { team: "团队协同", private: "个人私密" },
+  item_type: {
+    invoice_archive: "电子发票归档",
+    judicial_stage_and_doc: "司法文书与程序通知",
+  },
+  source: {
+    inbox: "收件箱",
+    wecom_callback: "企业微信快捷操作",
+    calendar: "协同日历",
+    auto_archive: "自动归档",
+  },
+};
+
+function formatAuditValue(
+  key: string,
+  val: unknown,
+  userNameMap: Map<number, string>
+): string {
+  if (val === null || val === undefined || val === "") return "-";
+  if (typeof val === "boolean") return val ? "是" : "否";
+
   if (key === "event_type" && typeof val === "string") return getEventTypeLabel(val);
-  if (val === true) return "是";
-  if (val === false) return "否";
-  if (typeof val === "object" && val !== null) {
-    if (Array.isArray(val)) return val.join("、");
-    return Object.entries(val as Record<string, unknown>)
-      .map(([k, v]) => `${AUDIT_FIELD_LABELS[k] ?? k}: ${String(v)}`)
-      .join(", ");
+  if (key === "service_method" && typeof val === "string") return getServiceMethodLabel(val);
+  if (key === "case_category" && typeof val === "string") {
+    return CASE_CATEGORY_META[val as keyof typeof CASE_CATEGORY_META]?.label ?? val;
   }
+  if ((key === "role" || key === "role_in_case") && typeof val === "string") {
+    return CASE_MEMBER_ROLE_LABELS[val as CaseMemberRole] ?? val;
+  }
+  if (key === "category" && typeof val === "string") {
+    return SCHEDULE_CATEGORY_LABELS[val] ?? val;
+  }
+  if (key === "notify_target_type" && typeof val === "string") {
+    return NOTIFY_TARGET_LABELS[val as NotifyTargetType] ?? val;
+  }
+  if (key === "risk_level" && typeof val === "string") {
+    return RISK_LEVEL_META[val as RiskLevel]?.label ?? val;
+  }
+  if (key === "user_id" && typeof val === "number") {
+    return userNameMap.get(val) ?? `成员#${val}`;
+  }
+  if (typeof val === "string" && AUDIT_VALUE_ENUMS[key]?.[val]) {
+    return AUDIT_VALUE_ENUMS[key][val];
+  }
+  if ((key === "start_time" || key === "end_time") && typeof val === "string") {
+    return formatShanghaiDateTime(val);
+  }
+
+  if (Array.isArray(val)) {
+    if (val.length === 0) return "无";
+    return val
+      .map((item) => {
+        if (item && typeof item === "object") {
+          const obj = item as Record<string, unknown>;
+          if ("user_id" in obj && ("role" in obj || "role_in_case" in obj)) {
+            const uname =
+              typeof obj.user_id === "number"
+                ? (userNameMap.get(obj.user_id) ?? `成员#${obj.user_id}`)
+                : String(obj.user_id);
+            const rawRole = String(obj.role ?? obj.role_in_case ?? "");
+            const rLabel = CASE_MEMBER_ROLE_LABELS[rawRole as CaseMemberRole] ?? rawRole;
+            return `${uname}（${rLabel}）`;
+          }
+          return formatAuditValue("", obj, userNameMap);
+        }
+        return formatAuditValue("", item, userNameMap);
+      })
+      .join("、");
+  }
+
+  if (typeof val === "object") {
+    const subEntries = Object.entries(val as Record<string, unknown>).filter(
+      ([, v]) => v !== null && v !== undefined && v !== ""
+    );
+    if (subEntries.length === 0) return "-";
+    return subEntries
+      .map(([k, v]) => `${AUDIT_FIELD_LABELS[k] ?? k}：${formatAuditValue(k, v, userNameMap)}`)
+      .join("；");
+  }
+
   return String(val);
 }
 
-function formatAuditDetail(detail: Record<string, unknown>): string {
+function formatAuditDetail(
+  detail: Record<string, unknown>,
+  userNameMap: Map<number, string>
+): string {
   const entries = Object.entries(detail || {}).filter(
     ([, v]) => v !== null && v !== undefined && v !== ""
   );
   if (entries.length === 0) return "-";
   return entries
-    .map(([k, v]) => `${AUDIT_FIELD_LABELS[k] ?? k}: ${formatAuditValue(k, v)}`)
+    .map(([k, v]) => `${AUDIT_FIELD_LABELS[k] ?? k}：${formatAuditValue(k, v, userNameMap)}`)
     .join(" · ");
 }
 
@@ -132,6 +248,8 @@ export function CaseDetail() {
   const [dlDate, setDlDate] = useState(todayShanghaiIso());
   const [dlBasis, setDlBasis] = useState("");
   const [dlRisk, setDlRisk] = useState<RiskLevel>("high");
+  const [dlOffsets, setDlOffsets] = useState<number[]>(RISK_LEVEL_DEADLINE_PRESETS.high.offsets);
+  const [dlEscalate, setDlEscalate] = useState<boolean>(RISK_LEVEL_DEADLINE_PRESETS.high.escalate);
   const [dlApplyRoll, setDlApplyRoll] = useState(true);
   const [dlNotifyTarget, setDlNotifyTarget] = useState<NotifyTargetType>("case_team");
   const [dlNotifyOwnerId, setDlNotifyOwnerId] = useState<string>("");
@@ -367,6 +485,8 @@ export function CaseDetail() {
         notify_target_type: dlNotifyTarget,
         notify_owner_id:
           dlNotifyTarget === "self" && dlNotifyOwnerId ? Number(dlNotifyOwnerId) : null,
+        reminder_offsets_days: dlOffsets,
+        escalate_to_supervisor: c?.visibility === "private" ? false : dlEscalate,
       }),
     onSuccess: () => {
       refreshCase();
@@ -442,8 +562,11 @@ export function CaseDetail() {
 
   const saveMembersMut = useMutation({
     mutationFn: () => {
+      const activeIds = new Set(
+        (usersQuery.data ?? []).filter((u) => u.is_active).map((u) => u.id)
+      );
       const payload = Object.entries(draftMembers)
-        .filter(([, role]) => role !== "none")
+        .filter(([uid, role]) => role !== "none" && activeIds.has(Number(uid)))
         .map(([uid, role]) => ({
           user_id: Number(uid),
           role_in_case: role as CaseMemberRole,
@@ -508,6 +631,9 @@ export function CaseDetail() {
   const visibleMemberUsers = (usersQuery.data ?? []).filter(
     (u) => u.is_active || detail.members.some((m) => m.user_id === u.id)
   );
+  const userNameMap = new Map<number, string>(
+    (usersQuery.data ?? []).map((u) => [u.id, u.full_name])
+  );
 
   const openEditCaseModal = () => {
     setEditTitle(c.case_title);
@@ -558,12 +684,12 @@ export function CaseDetail() {
                 {c.procedure_subtype}
               </span>
               {c.is_foreign_related && (
-                <span className="rounded-full border border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-primary-container)]">
+                <span className="rounded-full border border-primary/30 bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-primary-container)]">
                   涉外案件
                 </span>
               )}
               {c.case_category === "criminal" && c.charge_name && (
-                <span className="rounded-full border border-[var(--md-sys-color-secondary)]/30 bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-secondary-container)]">
+                <span className="rounded-full border border-secondary/30 bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-secondary-container)]">
                   罪名：{c.charge_name}
                 </span>
               )}
@@ -637,7 +763,7 @@ export function CaseDetail() {
           </div>
         </div>
 
-        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-4 text-xs">
+        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 border-t border-border/60 pt-4 text-xs">
           <div>
             <dt className="text-[var(--md-sys-color-on-surface-variant)]">委托人</dt>
             <dd className="mt-0.5 font-semibold">
@@ -692,7 +818,7 @@ export function CaseDetail() {
           >
             <span>{t.label}</span>
             {t.count !== undefined && (
-              <span className="rounded-full bg-[var(--md-sys-color-surface-container-lowest)]/85 px-2 py-0.5 text-[11px] tabular-nums">
+              <span className="rounded-full bg-surface-lowest/85 px-2 py-0.5 text-[11px] tabular-nums">
                 {t.count}
               </span>
             )}
@@ -871,6 +997,9 @@ export function CaseDetail() {
               type="button"
               onClick={() => {
                 setDlModalError(null);
+                setDlRisk("high");
+                setDlOffsets(RISK_LEVEL_DEADLINE_PRESETS.high.offsets);
+                setDlEscalate(RISK_LEVEL_DEADLINE_PRESETS.high.escalate);
                 setDlNotifyTarget("case_team");
                 setDlNotifyOwnerId(user ? String(user.id) : "");
                 setDlModalOpen(true);
@@ -893,7 +1022,7 @@ export function CaseDetail() {
                   key={dl.id}
                   className={`flex flex-wrap items-center justify-between gap-3 rounded-[var(--md-sys-shape-corner-md)] border border-[var(--md-sys-color-outline-variant)] p-4 ${
                     dl.is_completed
-                      ? "bg-[var(--md-sys-color-surface-container-low)]/75"
+                      ? "bg-surface-low/75"
                       : "bg-[var(--md-sys-color-surface-container-lowest)]"
                   }`}
                 >
@@ -1200,7 +1329,7 @@ export function CaseDetail() {
                   {entries.length === 0 ? (
                     <p className="text-xs text-[var(--md-sys-color-on-surface-variant)] pl-6">目录为空</p>
                   ) : (
-                    <ul className="divide-y divide-[var(--md-sys-color-outline-variant)]/50 pl-2">
+                    <ul className="divide-y divide-border/50 pl-2">
                       {entries.map((entry) => (
                         <li
                           key={entry.rel_path}
@@ -1264,7 +1393,7 @@ export function CaseDetail() {
           </div>
 
           {c.visibility !== "private" && (
-            <div className="divide-y divide-[var(--md-sys-color-outline-variant)]/50">
+            <div className="divide-y divide-border/50">
               {visibleMemberUsers.map((u) => {
                 const currentRole = effectiveMembersMap[u.id] ?? "none";
                 if (!isManager && currentRole === "none") return null;
@@ -1284,12 +1413,12 @@ export function CaseDetail() {
                         <p className="font-semibold">{u.full_name}</p>
                         <p className="text-xs text-[var(--md-sys-color-on-surface-variant)]">
                           {u.username}
-                          {!u.is_active ? "（已停用）" : ""}
+                          {!u.is_active ? "（已停用，保存成员变更后将自动移出）" : ""}
                         </p>
                       </div>
                     </div>
 
-                    {isManager ? (
+                    {isManager && u.is_active ? (
                       <div className="flex flex-wrap items-center gap-1.5">
                         {(["none", "lead", "co", "supervisor"] as const).map((r) => (
                           <button
@@ -1364,9 +1493,9 @@ export function CaseDetail() {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[var(--md-sys-color-outline-variant)]/50">
+                <tbody className="divide-y divide-border/50">
                   {auditQuery.data!.map((log) => (
-                    <tr key={log.id} className="hover:bg-[var(--md-sys-color-surface-container-low)]/50">
+                    <tr key={log.id} className="hover:bg-surface-low/50">
                       <td className="px-3 py-2.5 whitespace-nowrap text-[var(--md-sys-color-on-surface-variant)] tabular-nums">
                         {formatShanghaiDateTime(log.created_at)}
                       </td>
@@ -1375,7 +1504,7 @@ export function CaseDetail() {
                         {getCaseAuditActionLabel(log.action)}
                       </td>
                       <td className="px-3 py-2.5 text-[var(--md-sys-color-on-surface-variant)] break-words">
-                        {formatAuditDetail(log.detail)}
+                        {formatAuditDetail(log.detail, userNameMap)}
                       </td>
                     </tr>
                   ))}
@@ -1405,7 +1534,7 @@ export function CaseDetail() {
               opponent_name: editOpponent.trim() || null,
               handling_agency: editAgency.trim() || null,
               is_foreign_related: editForeign,
-              ...(isManager ? { visibility: editVisibility } : {}),
+              ...(user?.id === c.owner_id ? { visibility: editVisibility } : {}),
               ...(c.case_category === "criminal"
                 ? {
                     crime_type: editCrimeType || "一般犯罪",
@@ -1574,7 +1703,7 @@ export function CaseDetail() {
             label="涉外案件（上诉期按 30 日计算）"
           />
 
-          {isManager && (
+          {user?.id === c.owner_id && (
             <div className="space-y-1.5">
               <span className="block text-xs font-semibold">可见性权限</span>
               <MdRadioGroup<CaseVisibility>
@@ -1647,17 +1776,47 @@ export function CaseDetail() {
               />
             </div>
             <div>
-              <label htmlFor="cd-risk" className="block text-xs font-semibold mb-1">
-                风险等级
-              </label>
-              <MdSelect id="cd-risk" value={dlRisk} onChange={(e) => setDlRisk(e.target.value as RiskLevel)}>
-                <option value="critical">致命死线</option>
-                <option value="high">刚性程序</option>
-                <option value="normal">常规节点</option>
-                <option value="low">内部待办</option>
-              </MdSelect>
+              <span className="block text-xs font-semibold mb-1">重要程度</span>
+              <MdSegmentedButton<RiskLevel>
+                value={dlRisk}
+                onChange={(nextRisk) => {
+                  setDlRisk(nextRisk);
+                  const preset = RISK_LEVEL_DEADLINE_PRESETS[nextRisk];
+                  setDlOffsets(preset.offsets);
+                  setDlEscalate(preset.escalate);
+                }}
+                fullWidth
+                ariaLabel="期限重要程度"
+                options={RISK_LEVEL_OPTIONS}
+              />
             </div>
           </div>
+
+          <div className="space-y-1.5">
+            <span className="block text-xs font-semibold">提前提醒节点</span>
+            <div className="flex flex-wrap gap-1.5">
+              {[7, 3, 1, 0].map((day) => {
+                const selected = dlOffsets.includes(day);
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      const next = selected
+                        ? dlOffsets.filter((d) => d !== day)
+                        : [...dlOffsets, day].sort((a, b) => b - a);
+                      setDlOffsets(next);
+                    }}
+                    className={`lt-chip py-1 text-xs ${selected ? "lt-chip-active" : ""}`}
+                  >
+                    {day === 0 ? "到期当天" : `提前 ${day} 天`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div>
             <label htmlFor="cd-basis" className="block text-xs font-semibold mb-1">
               依据说明
@@ -1695,20 +1854,31 @@ export function CaseDetail() {
                   value={dlNotifyOwnerId}
                   onChange={(e) => setDlNotifyOwnerId(e.target.value)}
                 >
-                  {visibleMemberUsers.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.full_name}
-                    </option>
-                  ))}
+                  {visibleMemberUsers
+                    .filter((u) => u.is_active)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.full_name}
+                      </option>
+                    ))}
                 </MdSelect>
               </div>
             )}
           </div>
-          <MdCheckbox
-            checked={dlApplyRoll}
-            onChange={setDlApplyRoll}
-            label="遇法定节假日或周末自动顺延"
-          />
+          <div className="flex flex-col gap-2.5 pt-0.5">
+            {c.visibility !== "private" && (
+              <MdCheckbox
+                checked={dlEscalate}
+                onChange={setDlEscalate}
+                label="临期 1 天未办结抄送督办合伙人"
+              />
+            )}
+            <MdCheckbox
+              checked={dlApplyRoll}
+              onChange={setDlApplyRoll}
+              label="遇法定节假日或周末自动顺延"
+            />
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setDlModalOpen(false)} className="lt-btn-secondary">
               取消

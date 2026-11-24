@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.config import get_settings
-from app.core.security import check_triage_access, decode_triage_action_token
+from app.core.security import check_case_access, check_triage_access, decode_triage_action_token
 from app.database import get_session
 from app.models.entities import Case, InboxTriageItem, User
 from app.services.sms_normalizer import normalize_sms_request, verify_hmac_signature
@@ -189,8 +189,8 @@ def preview_signed_triage_quick_action(
     payload, user, item = _resolve_signed_quick_action_context(token=clean_tok, session=session)
     resolved_case_id = payload.get("case_id") or item.matched_case_id
     target_case = session.get(Case, resolved_case_id) if resolved_case_id else None
-    if target_case is not None and target_case.visibility.value == "private" and target_case.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied for private case")
+    if target_case is not None:
+        check_case_access(target_case, user, session)
     settings = get_settings()
     return HTMLResponse(
         content=render_triage_action_confirm_html(

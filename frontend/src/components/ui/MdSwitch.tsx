@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 interface MdSwitchProps {
   checked: boolean;
@@ -21,6 +21,9 @@ export function MdSwitch({
   ariaLabel,
   className = "",
 }: MdSwitchProps) {
+  const autoLabelId = useId();
+  const labelId = !ariaLabel && label ? autoLabelId : undefined;
+
   const toggleButton = (
     <button
       id={id}
@@ -28,6 +31,7 @@ export function MdSwitch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      aria-labelledby={labelId}
       disabled={disabled}
       onClick={() => {
         if (!disabled) onChange(!checked);
@@ -62,7 +66,9 @@ export function MdSwitch({
     >
       <div className="min-w-0 flex-1 cursor-pointer select-none">
         {label && (
-          <div className="text-sm font-medium text-[var(--md-sys-color-on-surface)]">{label}</div>
+          <div id={labelId} className="text-sm font-medium text-[var(--md-sys-color-on-surface)]">
+            {label}
+          </div>
         )}
         {description && (
           <div className="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">

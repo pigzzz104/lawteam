@@ -56,7 +56,7 @@ export function MdSegmentedButton<T extends string>({
               <span
                 className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
                   active
-                    ? "bg-[var(--md-sys-color-surface-container-lowest)]/80 text-[var(--md-sys-color-on-secondary-container)]"
+                    ? "bg-surface-lowest/80 text-[var(--md-sys-color-on-secondary-container)]"
                     : "bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
                 }`}
               >
