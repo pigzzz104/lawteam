@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.config import ALLOWED_COURT_AUTO_FETCH_MODES
+from app.core.constants import ALLOWED_NOTIFY_CHANNELS, AuditAction, clean_optional_str
 from app.core.security import (
     get_current_user,
     hash_password,
@@ -115,10 +116,9 @@ def create_user(
     if payload.phone_os not in ("ios", "android"):
         raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")
 
-    allowed_channels = ("wecom", "serverchan", "wxpusher", "pushplus", "webhook")
     ch = payload.notify_channel.strip().lower()
-    if ch not in allowed_channels:
-        raise HTTPException(status_code=400, detail=f"notify_channel must be one of {allowed_channels}")
+    if ch not in ALLOWED_NOTIFY_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"notify_channel must be one of {ALLOWED_NOTIFY_CHANNELS}")
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing is not None:
@@ -135,7 +135,7 @@ def create_user(
                 )
             fetch_mode = mode
 
-    clean_target = payload.notify_target.strip() or None if payload.notify_target else None
+    clean_target = clean_optional_str(payload.notify_target)
     if ch == "webhook" and clean_target:
         try:
             validate_webhook_url(clean_target)
@@ -147,12 +147,12 @@ def create_user(
         full_name=payload.full_name.strip(),
         hashed_password=hash_password(payload.password),
         system_role=payload.system_role,
-        wecom_userid=payload.wecom_userid.strip() or None if payload.wecom_userid else None,
+        wecom_userid=clean_optional_str(payload.wecom_userid),
         notify_channel=ch,
         notify_target=clean_target,
         phone_os=payload.phone_os,
-        phone_last4=payload.phone_last4.strip()[:4] or None if payload.phone_last4 else None,
-        id_card_last4=payload.id_card_last4.strip()[:4] or None if payload.id_card_last4 else None,
+        phone_last4=clean_optional_str(payload.phone_last4, max_len=4),
+        id_card_last4=clean_optional_str(payload.id_card_last4, max_len=4),
         court_auto_fetch_mode=fetch_mode,
         calendar_color=payload.calendar_color,
     )
@@ -161,7 +161,7 @@ def create_user(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="user.create",
+        action=AuditAction.USER_CREATE,
         entity_type="user",
         entity_id=user.id,
         detail={"username": user.username, "system_role": user.system_role.value},
@@ -186,23 +186,20 @@ def update_user(
     updates = payload.model_dump(exclude_unset=True)
 
     if "full_name" in updates and updates["full_name"] is not None:
-        user.full_name = str(updates["full_name"]).strip() or user.full_name
+        user.full_name = clean_optional_str(updates["full_name"]) or user.full_name
     if "system_role" in updates and updates["system_role"] is not None:
         if user.id == admin_user.id and updates["system_role"] != SystemRole.ADMIN:
             raise HTTPException(status_code=400, detail="Cannot demote yourself from admin")
         user.system_role = updates["system_role"]
     if "wecom_userid" in updates:
-        raw_wc = updates["wecom_userid"]
-        user.wecom_userid = str(raw_wc).strip() or None if raw_wc is not None else None
+        user.wecom_userid = clean_optional_str(updates["wecom_userid"])
     if "notify_channel" in updates and updates["notify_channel"] is not None:
-        allowed_channels = ("wecom", "serverchan", "wxpusher", "pushplus", "webhook")
         ch = str(updates["notify_channel"]).strip().lower()
-        if ch not in allowed_channels:
-            raise HTTPException(status_code=400, detail=f"notify_channel must be one of {allowed_channels}")
+        if ch not in ALLOWED_NOTIFY_CHANNELS:
+            raise HTTPException(status_code=400, detail=f"notify_channel must be one of {ALLOWED_NOTIFY_CHANNELS}")
         user.notify_channel = ch
     if "notify_target" in updates:
-        raw_tgt = updates["notify_target"]
-        user.notify_target = str(raw_tgt).strip() or None if raw_tgt is not None else None
+        user.notify_target = clean_optional_str(updates["notify_target"])
 
     eff_channel = (user.notify_channel or "wecom").strip().lower()
     if eff_channel == "webhook" and user.notify_target:
@@ -216,11 +213,9 @@ def update_user(
             raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")
         user.phone_os = updates["phone_os"]
     if "phone_last4" in updates:
-        raw_p4 = updates["phone_last4"]
-        user.phone_last4 = str(raw_p4).strip()[:4] or None if raw_p4 is not None else None
+        user.phone_last4 = clean_optional_str(updates["phone_last4"], max_len=4)
     if "id_card_last4" in updates:
-        raw_id4 = updates["id_card_last4"]
-        user.id_card_last4 = str(raw_id4).strip()[:4] or None if raw_id4 is not None else None
+        user.id_card_last4 = clean_optional_str(updates["id_card_last4"], max_len=4)
     if "court_auto_fetch_mode" in updates:
         raw_mode = updates["court_auto_fetch_mode"]
         mode = str(raw_mode).strip().lower() if raw_mode is not None else ""
@@ -234,7 +229,7 @@ def update_user(
         else:
             user.court_auto_fetch_mode = mode
     if "calendar_color" in updates and updates["calendar_color"] is not None:
-        user.calendar_color = str(updates["calendar_color"]).strip() or user.calendar_color
+        user.calendar_color = clean_optional_str(updates["calendar_color"]) or user.calendar_color
     if "is_active" in updates and updates["is_active"] is not None:
         if user.id == admin_user.id and not updates["is_active"]:
             raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
@@ -246,7 +241,7 @@ def update_user(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="user.update",
+        action=AuditAction.USER_UPDATE,
         entity_type="user",
         entity_id=user.id,
         detail=payload.model_dump(exclude_none=True, exclude={"new_password"}),

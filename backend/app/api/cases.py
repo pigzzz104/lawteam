@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from fastapi import (
     APIRouter,
@@ -16,9 +16,10 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.config import get_settings
+from app.core.constants import ALLOWED_CRIME_TYPES, AuditAction, clean_optional_str
 from app.core.security import (
     check_case_access,
     get_accessible_case_ids_filter,
@@ -222,7 +223,7 @@ def list_cases(
     if not accessible_ids:
         return []
 
-    stmt = select(Case).where(Case.id.in_(accessible_ids))  # type: ignore[union-attr]
+    stmt = select(Case).where(col(Case.id).in_(accessible_ids))
     if case_category is not None:
         stmt = stmt.where(Case.case_category == case_category)
     if is_archived is not None:
@@ -230,7 +231,7 @@ def list_cases(
     if visibility is not None:
         stmt = stmt.where(Case.visibility == visibility)
 
-    cases = list(session.exec(stmt.order_by(Case.created_at.desc())).all())
+    cases = list(session.exec(stmt.order_by(col(Case.created_at).desc())).all())
     if search:
         kw = search.strip().lower()
         cases = [
@@ -324,9 +325,14 @@ def create_case(
             )
         seen_users[m.user_id] = m.role_in_case
 
-    resolved_crime_type = (payload.crime_type or "").strip() or None
-    if payload.case_category == CaseCategory.CRIMINAL and not resolved_crime_type:
-        resolved_crime_type = "一般犯罪"
+    resolved_crime_type = clean_optional_str(payload.crime_type)
+    if payload.case_category == CaseCategory.CRIMINAL:
+        resolved_crime_type = resolved_crime_type or ALLOWED_CRIME_TYPES[0]
+    if resolved_crime_type is not None and resolved_crime_type not in ALLOWED_CRIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"crime_type must be one of: {', '.join(ALLOWED_CRIME_TYPES)}",
+        )
 
     now = utcnow()
     folder_rel_path = file_bridge.build_case_folder_rel_path(
@@ -370,7 +376,7 @@ def create_case(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.create",
+        action=AuditAction.CASE_CREATE,
         entity_type="case",
         entity_id=case.id,
         case_id=case.id,
@@ -401,7 +407,7 @@ def get_case_detail(
         session.exec(
             select(CaseEvent)
             .where(CaseEvent.case_id == case.id)
-            .order_by(CaseEvent.event_date.desc(), CaseEvent.id.desc())
+            .order_by(col(CaseEvent.event_date).desc(), col(CaseEvent.id).desc())
         ).all()
     )
     deadlines = list(
@@ -415,7 +421,7 @@ def get_case_detail(
         session.exec(
             select(Document)
             .where(Document.case_id == case.id)
-            .order_by(Document.created_at.desc())
+            .order_by(col(Document.created_at).desc())
         ).all()
     )
     files_tree = file_bridge.list_case_files(case.folder_rel_path)
@@ -485,8 +491,13 @@ def update_case(
                 val = val or None
         setattr(case, field, val)
 
-    if case.case_category == CaseCategory.CRIMINAL and not case.crime_type:
-        case.crime_type = "一般犯罪"
+    if case.case_category == CaseCategory.CRIMINAL:
+        case.crime_type = clean_optional_str(case.crime_type) or ALLOWED_CRIME_TYPES[0]
+    if case.crime_type is not None and case.crime_type not in ALLOWED_CRIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"crime_type must be one of: {', '.join(ALLOWED_CRIME_TYPES)}",
+        )
 
     if old_visibility != CaseVisibility.PRIVATE and case.visibility == CaseVisibility.PRIVATE:
         other_members = session.exec(
@@ -529,7 +540,7 @@ def update_case(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.stage_change" if ("current_stage" in updates and updates["current_stage"] != old_stage) else "case.update",
+        action=AuditAction.CASE_STAGE_CHANGE if ("current_stage" in updates and updates["current_stage"] != old_stage) else AuditAction.CASE_UPDATE,
         entity_type="case",
         entity_id=case.id,
         case_id=case.id,
@@ -579,7 +590,7 @@ def replace_case_members(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.members_replace",
+        action=AuditAction.CASE_MEMBERS_REPLACE,
         entity_type="case",
         entity_id=case.id,
         case_id=case.id,
@@ -640,7 +651,7 @@ def create_case_event(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.event_create",
+        action=AuditAction.CASE_EVENT_CREATE,
         entity_type="case_event",
         entity_id=event.id,
         case_id=case.id,
@@ -677,7 +688,7 @@ def recalculate_case_event_deadlines(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.event_recalculate",
+        action=AuditAction.CASE_EVENT_RECALCULATE,
         entity_type="case_event",
         entity_id=event.id,
         case_id=case.id,
@@ -741,7 +752,7 @@ async def upload_case_file(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="case.file_upload",
+        action=AuditAction.CASE_FILE_UPLOAD,
         entity_type="document",
         entity_id=doc.id,
         case_id=case.id,
@@ -781,7 +792,7 @@ class AuditLogRead(BaseModel):
     id: int
     actor_user_id: Optional[int]
     actor_name: str
-    action: str
+    action: Union[AuditAction, str]
     entity_type: str
     entity_id: Optional[int]
     case_id: Optional[int]

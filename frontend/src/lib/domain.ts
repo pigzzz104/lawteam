@@ -1,3 +1,7 @@
+import type { components } from "@/types/openapi.generated";
+
+type AuditAction = components["schemas"]["AuditAction"];
+
 import type {
   CaseCategory,
   CaseMemberRole,
@@ -287,7 +291,7 @@ export const CUSTODY_STATUS_OPTIONS = [
   { value: "未羁押", label: "未羁押 / 自由身" },
 ] as const;
 
-export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
+export const CASE_AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "case.create": "新建案件",
   "case.auto_create": "自动建案",
   "case.update": "更新案件信息",
@@ -296,12 +300,10 @@ export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
   "case.event_create": "录入程序事件",
   "case.event_recalculate": "重算程序期限",
   "case.file_upload": "上传案件卷宗",
-  "case.file_delete": "删除案件文件",
   "deadline.create": "创建自定义期限",
   "deadline.override": "手动调整到期日",
   "deadline.complete": "标记期限办结",
   "deadline.reopen": "恢复未办结期限",
-  "deadline.update": "更新法定期限",
   "deadline.delete": "删除期限",
   "schedule.create": "创建日程安排",
   "schedule.update": "更新日程安排",
@@ -310,7 +312,19 @@ export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
   "inbox.confirm": "人工确认归档入案",
   "inbox.reopen": "撤销归档回退",
   "inbox.ignore": "忽略短信/通知",
+  "inbox.auto_ignore": "自动忽略非涉案短信",
+  "rule.create": "新建期限规则",
+  "rule.update": "调整期限规则",
+  "rule.delete": "删除期限规则",
   "rule.recalculate": "期限规则重算",
+  "triage_policy.update": "调整自动分拣策略",
+  "user.create": "新建团队成员",
+  "user.update": "更新成员配置",
+};
+
+const LEGACY_AUDIT_ACTION_LABELS: Record<string, string> = {
+  "case.file_delete": "删除案件文件",
+  "deadline.update": "更新法定期限",
   create_case: "新建案件",
   update_case: "更新案件信息",
   replace_members: "调整办案成员",
@@ -331,7 +345,11 @@ export const CASE_AUDIT_ACTION_LABELS: Record<string, string> = {
 };
 
 export function getCaseAuditActionLabel(action: string): string {
-  return CASE_AUDIT_ACTION_LABELS[action] ?? action;
+  return (
+    (CASE_AUDIT_ACTION_LABELS as Record<string, string>)[action] ??
+    LEGACY_AUDIT_ACTION_LABELS[action] ??
+    action
+  );
 }
 
 export function toShanghaiIsoWithOffset(localDateTime: string): string {

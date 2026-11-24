@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlmodel import Session, select
 
+from app.core.constants import ALLOWED_CRIME_TYPES, AuditAction
 from app.core.security import get_accessible_case_ids_filter, record_audit_log
 from app.core.seed import resolve_default_subtype_and_stage
 from app.models.entities import (
@@ -196,7 +197,7 @@ def auto_create_case_for_triage(
         owner_id=owner.id,
         client_name=client_name,
         handling_agency=agency,
-        crime_type="一般犯罪" if case_cat == CaseCategory.CRIMINAL else None,
+        crime_type=ALLOWED_CRIME_TYPES[0] if case_cat == CaseCategory.CRIMINAL else None,
         folder_rel_path=folder_rel_path,
         created_at=now,
         updated_at=now,
@@ -215,7 +216,7 @@ def auto_create_case_for_triage(
     record_audit_log(
         session,
         actor_user_id=owner.id,
-        action="case.auto_create",
+        action=AuditAction.CASE_AUTO_CREATE,
         entity_type="case",
         entity_id=new_case.id,
         case_id=new_case.id,
@@ -425,7 +426,7 @@ def apply_triage_to_case(
     record_audit_log(
         session,
         actor_user_id=actor_user.id,
-        action="inbox.auto_archive" if auto_archived else "inbox.confirm",
+        action=AuditAction.INBOX_AUTO_ARCHIVE if auto_archived else AuditAction.INBOX_CONFIRM,
         entity_type="inbox_triage_item",
         entity_id=item.id,
         case_id=target_case.id,
@@ -564,7 +565,7 @@ def reopen_triage_item(
     record_audit_log(
         session,
         actor_user_id=actor_user.id,
-        action="inbox.reopen",
+        action=AuditAction.INBOX_REOPEN,
         entity_type="inbox_triage_item",
         entity_id=item.id,
         case_id=None if deleted_empty_auto_case else prev_case_id,
@@ -600,7 +601,7 @@ def mark_triage_ignored(
     record_audit_log(
         session,
         actor_user_id=actor_user.id,
-        action="inbox.ignore",
+        action=AuditAction.INBOX_IGNORE,
         entity_type="inbox_triage_item",
         entity_id=item.id,
         case_id=item.matched_case_id,

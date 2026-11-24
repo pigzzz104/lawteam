@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.core.constants import AuditAction
 from app.core.security import get_current_user, record_audit_log, require_admin
 from app.core.seed import load_stage_templates, seed_auto_triage_policies
 from app.database import get_session
@@ -105,7 +106,7 @@ def update_auto_triage_policy(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="triage_policy.update",
+        action=AuditAction.TRIAGE_POLICY_UPDATE,
         entity_type="auto_triage_policy",
         entity_id=policy.id,
         detail={"policy_key": policy.policy_key, "mode": policy.mode},
@@ -180,7 +181,7 @@ def create_rule(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="rule.create",
+        action=AuditAction.RULE_CREATE,
         entity_type="deadline_rule",
         entity_id=rule.id,
         detail={"rule_code": rule.rule_code},
@@ -215,7 +216,7 @@ def update_rule(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="rule.update",
+        action=AuditAction.RULE_UPDATE,
         entity_type="deadline_rule",
         entity_id=rule.id,
         detail=updates,
@@ -244,7 +245,7 @@ def delete_rule(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="rule.delete",
+        action=AuditAction.RULE_DELETE,
         entity_type="deadline_rule",
         entity_id=rule.id,
         detail={"rule_code": rule.rule_code},
@@ -268,7 +269,7 @@ def recalculate_rule_across_cases(
     record_audit_log(
         session,
         actor_user_id=admin_user.id,
-        action="rule.recalculate",
+        action=AuditAction.RULE_RECALCULATE,
         entity_type="deadline_rule",
         entity_id=rule.id,
         detail={"rule_code": rule.rule_code, **stats},

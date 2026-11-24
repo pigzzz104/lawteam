@@ -10,8 +10,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field as PydanticField
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
+from app.core.constants import ALLOWED_CRIME_TYPES, AuditAction, clean_optional_str
 from app.core.security import (
     check_case_access,
     check_triage_access,
@@ -162,12 +163,12 @@ def _serialize_triage_items(
 
     users_map = {
         u.id: u
-        for u in session.exec(select(User).where(User.id.in_(user_ids))).all()
+        for u in session.exec(select(User).where(col(User.id).in_(user_ids))).all()
     }
     cases_map = (
         {
             c.id: c
-            for c in session.exec(select(Case).where(Case.id.in_(case_ids))).all()
+            for c in session.exec(select(Case).where(col(Case.id).in_(case_ids))).all()
         }
         if case_ids
         else {}
@@ -175,7 +176,7 @@ def _serialize_triage_items(
     sms_map = (
         {
             s.id: s
-            for s in session.exec(select(SmsInbound).where(SmsInbound.id.in_(sms_ids))).all()
+            for s in session.exec(select(SmsInbound).where(col(SmsInbound.id).in_(sms_ids))).all()
         }
         if sms_ids
         else {}
@@ -232,7 +233,7 @@ def list_inbox_items(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[InboxTriageRead]:
-    stmt = select(InboxTriageItem).order_by(InboxTriageItem.created_at.desc(), InboxTriageItem.id.desc())
+    stmt = select(InboxTriageItem).order_by(col(InboxTriageItem.created_at).desc(), col(InboxTriageItem.id).desc())
     if status_filter is not None:
         stmt = stmt.where(InboxTriageItem.status == status_filter)
     if item_type:
@@ -514,11 +515,11 @@ def confirm_triage_item(
             )
             resolved_crime_type: Optional[str] = None
             if cc.case_category == CaseCategory.CRIMINAL:
-                raw_crime_type = (cc.crime_type or "").strip() or "一般犯罪"
-                if raw_crime_type not in ("一般犯罪", "流窜/多次/结伙作案"):
+                raw_crime_type = clean_optional_str(cc.crime_type) or ALLOWED_CRIME_TYPES[0]
+                if raw_crime_type not in ALLOWED_CRIME_TYPES:
                     raise HTTPException(
                         status_code=400,
-                        detail="crime_type must be '一般犯罪' or '流窜/多次/结伙作案'",
+                        detail=f"crime_type must be one of: {', '.join(ALLOWED_CRIME_TYPES)}",
                     )
                 resolved_crime_type = raw_crime_type
             resolved_charge_name = (cc.charge_name or "").strip() or None
@@ -716,7 +717,7 @@ def batch_ignore_triage_items(
         record_audit_log(
             session,
             actor_user_id=current_user.id,
-            action="inbox.ignore",
+            action=AuditAction.INBOX_IGNORE,
             entity_type="inbox_triage_item",
             entity_id=item.id,
             case_id=item.matched_case_id,

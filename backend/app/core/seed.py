@@ -115,7 +115,7 @@ def seed_demo_users(session: Session) -> dict[str, User]:
 
     if created_any:
         session.commit()
-        for uname, u in list(result.items()):
+        for _uname, u in list(result.items()):
             session.refresh(u)
     return result
 

@@ -86,9 +86,9 @@ def _decode_raw_body(raw_body: bytes, content_type: str) -> dict[str, Any]:
             if isinstance(parsed, dict):
                 return parsed
             return {"content": str(parsed)}
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             if "application/json" in ct:
-                raise ValueError("Invalid JSON SMS webhook payload")
+                raise ValueError("Invalid JSON SMS webhook payload") from exc
 
     if "application/x-www-form-urlencoded" in ct:
         qs = parse_qs(text, keep_blank_values=False)

@@ -14,7 +14,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.security import get_accessible_case_ids_filter
 from app.core.seed import load_sms_patterns, load_stage_templates
@@ -717,7 +717,7 @@ def match_case_with_confidence(
     if not accessible_ids:
         return CaseMatchResult(confidence="none", reason="当前无可用在办案件")
 
-    candidates = list(session.exec(select(Case).where(Case.id.in_(accessible_ids))).all())
+    candidates = list(session.exec(select(Case).where(col(Case.id).in_(accessible_ids))).all())
     if not candidates:
         return CaseMatchResult(confidence="none", reason="当前无可用在办案件")
 

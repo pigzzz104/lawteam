@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "gen:api-types": "sh -c 'tmp=$(mktemp) && (cd ../backend && uv run python scripts/export_openapi.py) > \"$tmp\" && npx openapi-typescript \"$tmp\" -o src/types/openapi.generated.ts && rm -f \"$tmp\"'",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -30,6 +32,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "openapi-typescript": "^7.13.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.6.3",

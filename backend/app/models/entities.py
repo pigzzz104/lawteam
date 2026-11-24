@@ -75,7 +75,7 @@ class TriageStatus(str, Enum):
 
 # --- Models ---
 class User(SQLModel, table=True):
-    __tablename__ = "users"
+    __tablename__ = "users"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
@@ -123,7 +123,7 @@ class User(SQLModel, table=True):
 
 
 class CaseMember(SQLModel, table=True):
-    __tablename__ = "case_members"
+    __tablename__ = "case_members"  # type: ignore[assignment]
     __table_args__ = (
         UniqueConstraint("case_id", "user_id", name="uq_case_member_case_user"),
     )
@@ -135,7 +135,7 @@ class CaseMember(SQLModel, table=True):
 
 
 class Case(SQLModel, table=True):
-    __tablename__ = "cases"
+    __tablename__ = "cases"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     case_title: str = Field(index=True, description="案件名称")
@@ -190,7 +190,7 @@ class Case(SQLModel, table=True):
 class DeadlineRule(SQLModel, table=True):
     """可编辑的多部门法期限规则表（启动时从 JSON 种子初始化，支持前端增删改）"""
 
-    __tablename__ = "deadline_rules"
+    __tablename__ = "deadline_rules"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     rule_code: str = Field(unique=True, index=True)
@@ -218,7 +218,7 @@ class DeadlineRule(SQLModel, table=True):
 class CaseEvent(SQLModel, table=True):
     """客观发生的程序事件（驱动阶段流转与期限计算的唯一事实源）"""
 
-    __tablename__ = "case_events"
+    __tablename__ = "case_events"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     case_id: int = Field(foreign_key="cases.id", index=True)
@@ -240,7 +240,7 @@ class CaseEvent(SQLModel, table=True):
 class Deadline(SQLModel, table=True):
     """案件具体期限实例表（含法定派生期限与律师手动创建的自定义期限）"""
 
-    __tablename__ = "deadlines"
+    __tablename__ = "deadlines"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     case_id: int = Field(foreign_key="cases.id", index=True)
@@ -290,7 +290,7 @@ class Deadline(SQLModel, table=True):
 class ScheduleItem(SQLModel, table=True):
     """日历具体时间段日程（开庭、会见、阅卷、调解、听证、个人/团队待办）"""
 
-    __tablename__ = "schedule_items"
+    __tablename__ = "schedule_items"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     case_id: Optional[int] = Field(default=None, foreign_key="cases.id", index=True)
@@ -319,7 +319,7 @@ class ScheduleItem(SQLModel, table=True):
 class SmsInbound(SQLModel, table=True):
     """手机转发的原始短信记录（兼容 iOS 快捷指令 / Mac / Android SmsForwarder）"""
 
-    __tablename__ = "sms_inbound"
+    __tablename__ = "sms_inbound"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     receiver_user_id: int = Field(foreign_key="users.id", index=True)
@@ -344,7 +344,7 @@ class SmsInbound(SQLModel, table=True):
 class InboxTriageItem(SQLModel, table=True):
     """待确认收件箱（连接短信/爬虫与正式业务表的安全隔离层）"""
 
-    __tablename__ = "inbox_triage_items"
+    __tablename__ = "inbox_triage_items"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     sms_id: Optional[int] = Field(default=None, foreign_key="sms_inbound.id", index=True)
@@ -367,7 +367,7 @@ class InboxTriageItem(SQLModel, table=True):
 class Document(SQLModel, table=True):
     """归档文件索引表（文书与发票）"""
 
-    __tablename__ = "documents"
+    __tablename__ = "documents"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     case_id: Optional[int] = Field(default=None, foreign_key="cases.id", index=True)
@@ -385,7 +385,7 @@ class Document(SQLModel, table=True):
 class ReminderDelivery(SQLModel, table=True):
     """微信提醒投递幂等台账"""
 
-    __tablename__ = "reminder_deliveries"
+    __tablename__ = "reminder_deliveries"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     idempotency_key: str = Field(unique=True, index=True)
@@ -412,7 +412,7 @@ class ReminderDelivery(SQLModel, table=True):
 class AuditLog(SQLModel, table=True):
     """关键操作审计日志（阶段流转、手动修改死线、分拣确认、规则编辑）"""
 
-    __tablename__ = "audit_logs"
+    __tablename__ = "audit_logs"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     actor_user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
@@ -429,7 +429,7 @@ class AuditLog(SQLModel, table=True):
 class AutoTriagePolicy(SQLModel, table=True):
     """团队级自动分拣策略开关（按文书/短信类型配置自动归档或人工二次复核）"""
 
-    __tablename__ = "auto_triage_policies"
+    __tablename__ = "auto_triage_policies"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
     policy_key: str = Field(unique=True, index=True)

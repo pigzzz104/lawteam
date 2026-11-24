@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.config import ALLOWED_COURT_AUTO_FETCH_MODES, get_settings
+from app.core.constants import ALLOWED_NOTIFY_CHANNELS, clean_optional_str
 from app.core.security import (
     create_access_token,
     get_current_user,
@@ -154,24 +155,19 @@ def update_me(
     updates = payload.model_dump(exclude_unset=True)
 
     if "full_name" in updates and updates["full_name"] is not None:
-        current_user.full_name = str(updates["full_name"]).strip() or current_user.full_name
+        current_user.full_name = clean_optional_str(updates["full_name"]) or current_user.full_name
     if "wecom_userid" in updates:
-        raw_wc = updates["wecom_userid"]
-        current_user.wecom_userid = str(raw_wc).strip() or None if raw_wc is not None else None
+        current_user.wecom_userid = clean_optional_str(updates["wecom_userid"])
     if "notify_channel" in updates and updates["notify_channel"] is not None:
-        allowed_channels = ("wecom", "serverchan", "wxpusher", "pushplus", "webhook")
         ch = str(updates["notify_channel"]).strip().lower()
-        if ch not in allowed_channels:
+        if ch not in ALLOWED_NOTIFY_CHANNELS:
             raise HTTPException(
                 status_code=400,
-                detail=f"notify_channel must be one of {allowed_channels}",
+                detail=f"notify_channel must be one of {ALLOWED_NOTIFY_CHANNELS}",
             )
         current_user.notify_channel = ch
     if "notify_target" in updates:
-        raw_target = updates["notify_target"]
-        current_user.notify_target = (
-            str(raw_target).strip() or None if raw_target is not None else None
-        )
+        current_user.notify_target = clean_optional_str(updates["notify_target"])
 
     eff_channel = (current_user.notify_channel or "wecom").strip().lower()
     if eff_channel == "webhook" and current_user.notify_target:
@@ -201,15 +197,9 @@ def update_me(
             raise HTTPException(status_code=400, detail="phone_os must be 'ios' or 'android'")
         current_user.phone_os = updates["phone_os"]
     if "phone_last4" in updates:
-        raw_p4 = updates["phone_last4"]
-        current_user.phone_last4 = (
-            str(raw_p4).strip()[:4] or None if raw_p4 is not None else None
-        )
+        current_user.phone_last4 = clean_optional_str(updates["phone_last4"], max_len=4)
     if "id_card_last4" in updates:
-        raw_id4 = updates["id_card_last4"]
-        current_user.id_card_last4 = (
-            str(raw_id4).strip()[:4] or None if raw_id4 is not None else None
-        )
+        current_user.id_card_last4 = clean_optional_str(updates["id_card_last4"], max_len=4)
     if "court_auto_fetch_mode" in updates:
         raw_mode = updates["court_auto_fetch_mode"]
         mode = str(raw_mode).strip().lower() if raw_mode is not None else ""
@@ -223,12 +213,11 @@ def update_me(
         else:
             current_user.court_auto_fetch_mode = mode
     if "calendar_color" in updates and updates["calendar_color"] is not None:
-        current_user.calendar_color = str(updates["calendar_color"]).strip() or current_user.calendar_color
-    if "sms_webhook_secret" in updates:
-        raw_sec = updates["sms_webhook_secret"]
-        current_user.sms_webhook_secret = (
-            str(raw_sec).strip() or None if raw_sec is not None else None
+        current_user.calendar_color = (
+            clean_optional_str(updates["calendar_color"]) or current_user.calendar_color
         )
+    if "sms_webhook_secret" in updates:
+        current_user.sms_webhook_secret = clean_optional_str(updates["sms_webhook_secret"])
     if payload.rotate_sms_token:
         current_user.sms_webhook_token = secrets.token_urlsafe(16)
     if payload.rotate_ics_token:

@@ -20,26 +20,19 @@ from app.models.entities import (
     InboxTriageItem,
     NotifyTargetType,
     ReminderDelivery,
-    RiskLevel,
     ScheduleItem,
     SystemRole,
     TriageStatus,
     User,
     utcnow,
 )
+from app.core.constants import RISK_LEVEL_LABELS
 from app.services.wecom_notifier import dispatch_notification_to_users
 
 logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_DEADLINE_NOTIFY_HOUR = 9
 MAX_DELIVERY_RETRIES = 3
-
-_RISK_LEVEL_LABELS: dict[RiskLevel, str] = {
-    RiskLevel.CRITICAL: "紧急",
-    RiskLevel.HIGH: "重要",
-    RiskLevel.NORMAL: "常规",
-    RiskLevel.LOW: "备忘",
-}
 
 
 @dataclass
@@ -325,7 +318,7 @@ def _evaluate_deadlines(
             title = f"{prefix}{dl.title}"
             case_no = f"（{case.case_number}）" if case.case_number else ""
             remaining_text = "今天到期" if days_remaining == 0 else f"剩余 {days_remaining} 天"
-            risk_label = _RISK_LEVEL_LABELS.get(dl.risk_level, "重要")
+            risk_label = RISK_LEVEL_LABELS.get(dl.risk_level, "重要")
             markdown_body = (
                 f"- **案件**：{case.case_title}{case_no}\n"
                 f"- **事项**：{dl.title}（{risk_label}）\n"

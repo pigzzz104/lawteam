@@ -8,9 +8,10 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.config import get_settings
+from app.core.constants import ALLOWED_CRIME_TYPES, AuditAction
 from app.core.security import record_audit_log
 from app.database import engine
 from app.models.entities import (
@@ -159,7 +160,7 @@ def evaluate_and_apply_auto_triage(
         record_audit_log(
             session,
             actor_user_id=owner.id,
-            action="inbox.auto_ignore",
+            action=AuditAction.INBOX_AUTO_IGNORE,
             entity_type="inbox_triage_item",
             entity_id=triage.id,
             case_id=None,
@@ -323,7 +324,7 @@ def evaluate_and_apply_auto_triage(
                 owner_id=owner.id,
                 client_name="probe",
                 folder_rel_path="probe",
-                crime_type="一般犯罪" if probe_cat == CaseCategory.CRIMINAL else None,
+                crime_type=ALLOWED_CRIME_TYPES[0] if probe_cat == CaseCategory.CRIMINAL else None,
             )
             probe_rules = [
                 r
@@ -562,7 +563,7 @@ def ingest_sms_and_create_triage(
         existing_triage = session.exec(
             select(InboxTriageItem)
             .where(InboxTriageItem.sms_id == existing_sms.id)
-            .order_by(InboxTriageItem.id.desc())
+            .order_by(col(InboxTriageItem.id).desc())
         ).first()
         if existing_triage is None:
             existing_triage = InboxTriageItem(
@@ -618,7 +619,7 @@ def ingest_sms_and_create_triage(
         existing_triage = session.exec(
             select(InboxTriageItem)
             .where(InboxTriageItem.sms_id == existing_sms.id)
-            .order_by(InboxTriageItem.id.desc())
+            .order_by(col(InboxTriageItem.id).desc())
         ).first()
         if existing_triage is None:
             existing_triage = InboxTriageItem(

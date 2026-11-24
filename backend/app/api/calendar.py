@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session, select
 
+from app.core.constants import RISK_LEVEL_LABELS, AuditAction
 from app.core.security import (
     check_case_access,
     get_accessible_case_ids_filter,
@@ -601,7 +602,7 @@ def export_ics_feed(
     vtz = icalendar.Timezone()
     vtz.add("tzid", "Asia/Shanghai")
     vtz_std = icalendar.TimezoneStandard()
-    vtz_std.add("dtstart", datetime(1970, 1, 1, 0, 0, 0))
+    vtz_std.add("dtstart", datetime(1970, 1, 1, 0, 0, 0))  # noqa: DTZ001
     vtz_std.add("tzoffsetfrom", timedelta(hours=8))
     vtz_std.add("tzoffsetto", timedelta(hours=8))
     vtz_std.add("tzname", "CST")
@@ -610,20 +611,13 @@ def export_ics_feed(
 
     dtstamp_utc = datetime.now(timezone.utc)
 
-    risk_labels = {
-        RiskLevel.CRITICAL: "紧急",
-        RiskLevel.HIGH: "重要",
-        RiskLevel.NORMAL: "常规",
-        RiskLevel.LOW: "备忘",
-    }
-
     for dl in deadlines:
         if dl.id is None:
             continue
         c = case_map.get(dl.case_id)
         case_prefix = f"{c.case_title} - " if c else ""
         status_prefix = "[已办结] " if dl.is_completed else ""
-        summary = f"{status_prefix}[{risk_labels.get(dl.risk_level, '期限')}] {case_prefix}{dl.title}"
+        summary = f"{status_prefix}[{RISK_LEVEL_LABELS.get(dl.risk_level, '期限')}] {case_prefix}{dl.title}"
         desc_parts = [
             f"案件：{c.case_title}" if c else "",
             f"案号：{c.case_number}" if (c and c.case_number) else "",
@@ -793,7 +787,7 @@ def create_custom_deadline(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="deadline.create",
+        action=AuditAction.DEADLINE_CREATE,
         entity_type="deadline",
         entity_id=dl.id,
         case_id=case.id,
@@ -881,7 +875,7 @@ def update_deadline(
         record_audit_log(
             session,
             actor_user_id=current_user.id,
-            action="deadline.override",
+            action=AuditAction.DEADLINE_OVERRIDE,
             entity_type="deadline",
             entity_id=dl.id,
             case_id=dl.case_id,
@@ -901,11 +895,11 @@ def update_deadline(
             if new_completed:
                 dl.completed_at = utcnow()
                 dl.completed_by = current_user.id
-                action_name = "deadline.complete"
+                action_name = AuditAction.DEADLINE_COMPLETE
             else:
                 dl.completed_at = None
                 dl.completed_by = None
-                action_name = "deadline.reopen"
+                action_name = AuditAction.DEADLINE_REOPEN
             record_audit_log(
                 session,
                 actor_user_id=current_user.id,
@@ -935,7 +929,7 @@ def delete_deadline(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="deadline.delete",
+        action=AuditAction.DEADLINE_DELETE,
         entity_type="deadline",
         entity_id=dl.id,
         case_id=dl.case_id,
@@ -1014,7 +1008,7 @@ def create_schedule(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="schedule.create",
+        action=AuditAction.SCHEDULE_CREATE,
         entity_type="schedule_item",
         entity_id=sched.id,
         case_id=sched.case_id,
@@ -1090,7 +1084,7 @@ def update_schedule(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="schedule.update",
+        action=AuditAction.SCHEDULE_UPDATE,
         entity_type="schedule_item",
         entity_id=sched.id,
         case_id=sched.case_id,
@@ -1118,7 +1112,7 @@ def delete_schedule(
     record_audit_log(
         session,
         actor_user_id=current_user.id,
-        action="schedule.delete",
+        action=AuditAction.SCHEDULE_DELETE,
         entity_type="schedule_item",
         entity_id=sched.id,
         case_id=sched.case_id,

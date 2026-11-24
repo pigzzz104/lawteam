@@ -32,6 +32,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
+    "pyright>=1.1.390",
 ]
 
 [tool.pytest.ini_options]
@@ -42,3 +43,15 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F", "W", "B", "DTZ"]
+ignore = ["B008"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportAttributeAccessIssue = "error"
+reportCallIssue = "error"
+reportOptionalMemberAccess = "none"
+reportArgumentType = "none"

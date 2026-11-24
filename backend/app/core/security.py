@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import bcrypt
 import jwt
@@ -10,6 +10,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 
 from app.config import get_settings
+from app.core.constants import AuditAction
 from app.database import get_session
 from app.models.entities import (
     AuditLog,
@@ -307,16 +308,17 @@ def record_audit_log(
     session: Session,
     *,
     actor_user_id: Optional[int],
-    action: str,
+    action: Union[AuditAction, str],
     entity_type: str,
     entity_id: Optional[int],
     case_id: Optional[int] = None,
     detail: Optional[dict[str, Any]] = None,
 ) -> AuditLog:
     """Append an immutable audit log entry inside the active DB transaction."""
+    action_str = action.value if isinstance(action, AuditAction) else str(action)
     entry = AuditLog(
         actor_user_id=actor_user_id,
-        action=action,
+        action=action_str,
         entity_type=entity_type,
         entity_id=entity_id,
         case_id=case_id,

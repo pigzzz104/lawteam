@@ -18,3 +18,7 @@
 ## 4. 前端 MD3 与文案红线
 - **MD3 唯一标准**：`tailwind.config.js` 必须对齐 `--md-sys-*`（禁未定义变量退化成直角）；全站禁用原生方框 `checkbox`/`radio`/`color`/`file`/`datalist`/`window.confirm()` 及直角高亮按钮，统一用 MD3 组件与 `.lt-*` 样式。
 - **极简非技术化文案**：严禁暴露 `rule_code`/`judgment_served`/`auto_archive`/`Tier-2`/幂等键/环境变量名/原始 JSON；严禁在每次简化或加功能后回潮新增重复说明框；改完前端必须启动服务实测核心页（含 `/cases/:id` 与弹窗），不得只跑 `npm run build`。
+
+## 5. 适度防御与防漂移门禁
+- **适度防御与本机环境**：遵循适度防御原则（不引入重型运维或重型 E2E 框架），Mac 本机前端实测与浏览器自动化一律使用 Ego Lite（`ego-browser`）。
+- **防漂移门禁与阶段交付**：修改后端模型/路由或前端类型后必须执行 `cd frontend && npm run gen:api-types`，交付前跑通根目录 `./check.sh`（Ruff + Pyright + `lawteam_test` 隔离测试 + OpenAPI 契约零漂移 + 前端构建 + 红线扫描）；**每完成一个阶段并通过 `./check.sh` 后自动 `git commit` 并 `git push` 到远端**。

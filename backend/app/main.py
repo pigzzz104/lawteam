@@ -85,7 +85,7 @@ app.include_router(reminders_router)
 
 @app.get("/api/health")
 def health_check(session: Session = Depends(get_session)) -> dict[str, str]:
-    session.exec(text("SELECT 1"))
+    session.execute(text("SELECT 1"))
     return {
         "status": "ok",
         "database": "ok",
